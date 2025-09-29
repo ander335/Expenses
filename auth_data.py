@@ -1,3 +1,5 @@
-# Telegram bot authentication constants
-# Replace 'YOUR_BOT_TOKEN' with your actual bot token from BotFather
-BOT_TOKEN = 'YOUR_BOT_TOKEN'
+BOT_TOKEN = "put_token_here"
+
+CHATGPT_API_KEY = "put_token_here"
+
+GEMINI_API_KEY = "put_token_here"
