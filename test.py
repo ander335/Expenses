@@ -2,8 +2,7 @@ from gemini import parse_receipt_image
 import json
 from datetime import datetime
 from parse import parse_receipt_from_file
-from db import add_receipt
-from db import get_or_create_user, UserData
+from db import add_receipt, get_or_create_user, User
 
 # Test code for image processing and saving to JSON
 # if __name__ == "__main__":
@@ -31,7 +30,7 @@ if __name__ == "__main__":
     
     try:
         # First ensure we have a user
-        test_user = get_or_create_user(UserData(user_id=user_id, name="Test User"))
+        test_user = get_or_create_user(User(user_id=user_id, name="Test User"))
         print(f"Using user: {test_user.name} (ID: {test_user.user_id})")
         
         # Parse the receipt data from the JSON file
