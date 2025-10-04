@@ -9,7 +9,22 @@ import base64
 from auth_data import GEMINI_API_KEY
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"  # Supported Gemini image endpoint
-RECEIPT_PARSE_PROMPT = "Extract the total amount spent from this shop receipt image. Return only the amount as a number."
+RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Return ONLY a JSON object with these properties:
+{
+    "text": "full text content of the receipt, exactly as written",
+    "category": "closest matching category from this list: [food, alcohol, transport, clothes, vacation, healthcare, beauty, household, car, cat, other]",
+    "merchant": "name of the store or merchant",
+    "positions": [
+        {
+            "description": "item description",
+            "quantity": "item quantity as a number or weight",
+            "category": "item category from this list: [food, alcohol, clothes, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
+            "price": "item price as a number"
+        }
+    ],
+    "total_amount": "total amount as a number",
+    "date": "receipt date in YYYY-MM-DD or DD-MM-YYYY format if visible, otherwise null"
+}"""
 
 def parse_receipt_image(image_path):
     """
@@ -44,9 +59,6 @@ def parse_receipt_image(image_path):
     )
     response.raise_for_status()
     result = response.json()
-    # Extract amount from result (depends on API response structure)
-    try:
-        amount = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError):
-        amount = "No response from Gemini."
-    return amount
+    parsed_data = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    return parsed_data  # Returns the full JSON response from Gemini
+
