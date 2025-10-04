@@ -100,3 +100,71 @@ def add_receipt(receipt: Receipt) -> int:
     finally:
         session.close()
     return receipt_id
+
+def get_last_n_receipts(user_id: int, n: int) -> List[Receipt]:
+    """Get last N receipts for a user, ordered by date desc."""
+    session = Session()
+    try:
+        receipts = session.query(Receipt)\
+            .filter_by(user_id=user_id)\
+            .order_by(Receipt.receipt_id.desc())\
+            .limit(n)\
+            .all()
+        return receipts
+    finally:
+        session.close()
+
+def delete_receipt(receipt_id: int, user_id: int) -> bool:
+    """Delete a receipt by ID. Returns True if successful, False if receipt not found or not owned by user."""
+    session = Session()
+    try:
+        receipt = session.query(Receipt)\
+            .filter_by(receipt_id=receipt_id, user_id=user_id)\
+            .first()
+        if not receipt:
+            return False
+        session.delete(receipt)
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
+    """Get monthly summary for last N months."""
+    from sqlalchemy import func, desc
+    from datetime import datetime, timedelta
+    
+    session = Session()
+    try:
+        # Calculate date N months ago
+        today = datetime.now()
+        start_date = (today - timedelta(days=n_months * 30)).strftime('%Y-%m')
+        
+        # Query receipts grouped by month
+        results = session.query(
+            func.strftime('%Y-%m', Receipt.date).label('month'),
+            func.sum(Receipt.total_amount).label('total'),
+            func.count(Receipt.receipt_id).label('count')
+        ).filter(
+            Receipt.user_id == user_id,
+            Receipt.date >= start_date
+        ).group_by(
+            func.strftime('%Y-%m', Receipt.date)
+        ).order_by(
+            desc('month')
+        ).all()
+        
+        # Convert to list of dicts
+        return [
+            {
+                'month': r.month,
+                'total': float(r.total),
+                'count': r.count
+            }
+            for r in results
+        ]
+    finally:
+        session.close()

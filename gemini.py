@@ -60,5 +60,15 @@ def parse_receipt_image(image_path):
     response.raise_for_status()
     result = response.json()
     parsed_data = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-    return parsed_data  # Returns the full JSON response from Gemini
+    
+    # Remove JSON code block markers if they exist
+    if parsed_data.startswith('```json\n'):
+        parsed_data = parsed_data[7:]
+    elif parsed_data.startswith('```\n'):
+        parsed_data = parsed_data[4:]
+    
+    if parsed_data.endswith('\n```'):
+        parsed_data = parsed_data[:-4]
+    
+    return parsed_data.strip()  # Returns the cleaned JSON response from Gemini
 
