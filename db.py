@@ -141,30 +141,33 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
     try:
         # Calculate date N months ago
         today = datetime.now()
-        start_date = (today - timedelta(days=n_months * 30)).strftime('%Y-%m')
+        start_date = (today - timedelta(days=n_months * 30)).strftime('%d-%m-%Y')
         
         # Query receipts grouped by month
         results = session.query(
-            func.strftime('%Y-%m', Receipt.date).label('month'),
+            # Combine month and year from DD-MM-YYYY format
+            func.substr(Receipt.date, 4, 7).label('month'),  # Extract MM-YYYY from DD-MM-YYYY
             func.sum(Receipt.total_amount).label('total'),
             func.count(Receipt.receipt_id).label('count')
         ).filter(
             Receipt.user_id == user_id,
-            Receipt.date >= start_date
+            Receipt.date.isnot(None)  # Exclude records with NULL dates
         ).group_by(
-            func.strftime('%Y-%m', Receipt.date)
+            func.substr(Receipt.date, 4, 7)  # Group by MM-YYYY
         ).order_by(
             desc('month')
         ).all()
         
-        # Convert to list of dicts
+        # Convert to list of dicts with formatted month
         return [
             {
-                'month': r.month,
-                'total': float(r.total),
-                'count': r.count
+                'month': r.month or 'Unknown',  # Will be in MM-YYYY format
+                'total': float(r.total or 0),
+                'count': r.count or 0
             }
-            for r in results
+            for r in results 
+            # Filter for last N months - compare only month-year part
+            if r.month >= start_date[3:] 
         ]
     finally:
         session.close()

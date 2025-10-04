@@ -2,7 +2,7 @@ from gemini import parse_receipt_image
 import json
 from datetime import datetime
 from parse import parse_receipt_from_file
-from db import add_receipt, get_or_create_user, User
+from db import add_receipt, get_or_create_user, get_monthly_summary, User
 
 # Test code for image processing and saving to JSON
 # if __name__ == "__main__":
@@ -23,23 +23,73 @@ from db import add_receipt, get_or_create_user, User
 #     print(f"\nOutput saved to: {output_file}")
 
 # Test code for reading JSON and saving to database
-if __name__ == "__main__":
-    # Read and parse the receipt data from JSON file
-    json_file = "receipt_analysis_20251004_171452.json"  # Use your actual JSON file name
-    user_id = 2  # Example user ID
+# if __name__ == "__main__":
+#     # Read and parse the receipt data from JSON file
+#     json_file = "receipt_analysis_20251004_171452.json"  # Use your actual JSON file name
+#     user_id = 2  # Example user ID
     
+#     try:
+#         # First ensure we have a user
+#         test_user = get_or_create_user(User(user_id=user_id, name="Test User"))
+#         print(f"Using user: {test_user.name} (ID: {test_user.user_id})")
+        
+#         # Parse the receipt data from the JSON file
+#         receipt_data = parse_receipt_from_file(json_file, user_id)
+        
+#         # Save the receipt data to the database
+#         receipt_id = add_receipt(receipt_data)
+        
+#         print(f"Successfully saved receipt to database with ID: {receipt_id}")
+        
+#     except Exception as e:
+#         print(f"Error processing receipt: {str(e)}")
+
+
+def print_summary(user_id: int, months: int):
+    """Print expense summary for the specified user."""
     try:
-        # First ensure we have a user
-        test_user = get_or_create_user(User(user_id=user_id, name="Test User"))
-        print(f"Using user: {test_user.name} (ID: {test_user.user_id})")
+        summary = get_monthly_summary(user_id, months)
         
-        # Parse the receipt data from the JSON file
-        receipt_data = parse_receipt_from_file(json_file, user_id)
+        if not summary:
+            print(f"No data found for user {user_id} in the last {months} months")
+            return
         
-        # Save the receipt data to the database
-        receipt_id = add_receipt(receipt_data)
+        print(f"\nExpense Summary for last {months} months:")
+        print("=" * 50)
+        print(f"{'Month':<8} {'# Receipts':>12} {'Total Amount':>15}")
+        print("-" * 50)
         
-        print(f"Successfully saved receipt to database with ID: {receipt_id}")
+        total_amount = 0
+        total_receipts = 0
+        
+        for month_data in summary:
+            month = month_data['month']  # Will be in MM-YYYY format
+            count = month_data['count']
+            amount = month_data['total']
+            
+            print(f"{month:<8} {count:>12} {amount:>15.2f}")
+            
+            total_amount += amount
+            total_receipts += count
+        
+        print("-" * 50)
+        print(f"Total:    {total_receipts:>12} {total_amount:>15.2f}")
+        print("=" * 50)
+        
+        # Calculate monthly average
+        avg_monthly = total_amount / len(summary) if len(summary) > 0 else 0
+        print(f"\nMonthly average: {avg_monthly:.2f}")
         
     except Exception as e:
-        print(f"Error processing receipt: {str(e)}")
+        print(f"Error getting summary: {str(e)}")
+
+if __name__ == "__main__":
+    USER_ID = 98336105
+    MONTHS = 6
+    
+    # First ensure we have a user
+    test_user = get_or_create_user(User(user_id=USER_ID, name="Test User"))
+    print(f"User: {test_user.name} (ID: {test_user.user_id})")
+    
+    # Get and print the summary
+    print_summary(USER_ID, MONTHS)
