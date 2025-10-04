@@ -4,12 +4,14 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from auth_data import BOT_TOKEN
 import os
-from gemini import parse_receipt_image
-from db import add_expense
+from db import add_receipt, get_or_create_user, UserData
+from parse import parse_receipt_from_file
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	await update.message.reply_text('Hello! I am your Expenses bot. Send me a photo of your shop receipt.')
+	user = update.effective_user
+	get_or_create_user(user.id, user.full_name)
+	await update.message.reply_text(f'Hello {user.full_name}! I am your Expenses bot. Send me a photo of your shop receipt.')
 
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -25,13 +27,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 	await update.message.reply_text("Processing your receipt...")
 
-	# Send image to Gemini for parsing
+	# Read from JSON file instead of parsing image
 	try:
-		amount = parse_receipt_image(file_path)
-		shop_name = "Unknown Shop"
-		category = "Unknown Category"
-		expense_id = add_expense(shop_name, category, float(amount))
-		await update.message.reply_text(f"Expense recorded! Amount: {amount}")
+		user_id = update.effective_user.id
+		user = UserData(user_id=user_id, name=update.effective_user.full_name)
+		get_or_create_user(user)  # Ensure user exists
+		
+		# Parse and save the receipt
+		receipt = parse_receipt_from_file('receipt_analysis_20251004_171452.json', user_id)
+		receipt_id = add_receipt(receipt)
+		await update.message.reply_text(f"Receipt recorded! Amount: {receipt.total_amount}")
 	except Exception as e:
 		await update.message.reply_text(f"Failed to process receipt: {e}")
 	finally:

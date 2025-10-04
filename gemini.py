@@ -19,11 +19,11 @@ RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following i
             "description": "item description",
             "quantity": "item quantity as a number or weight",
             "category": "item category from this list: [food, alcohol, clothes, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
-            "price": "item price as a number"
+            "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
         }
     ],
     "total_amount": "total amount as a number",
-    "date": "receipt date in YYYY-MM-DD or DD-MM-YYYY format if visible, otherwise null"
+    "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. The date migth appear in different formats, convert it to DD-MM-YYYY"
 }"""
 
 def parse_receipt_image(image_path):
