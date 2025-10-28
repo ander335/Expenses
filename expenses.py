@@ -16,7 +16,8 @@ from gemini import parse_receipt_image
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    get_or_create_user(user.id, user.full_name)
+    db_user = User(user_id=user.id, name=user.full_name)
+    get_or_create_user(db_user)
     help_text = (
         f'Hello {user.full_name}! I am your Expenses bot.\n\n'
         'Available commands:\n'
@@ -44,8 +45,7 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "Last receipts:\n\n"
     for r in receipts:
-        text += (f"ID: {r.receipt_id} | {r.merchant} | "
-                f"{r.category} | {r.total_amount:.2f}\n")
+        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}\n"
     
     await update.message.reply_text(text)
 
