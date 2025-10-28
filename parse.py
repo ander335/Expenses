@@ -6,18 +6,23 @@ Handles parsing of receipt data into domain models.
 import json
 from typing import Dict, Any
 from db import Receipt, Position
+from logger_config import logger
 
 def parse_position(position_data: Dict[str, Any]) -> Position:
     """Convert a position dictionary into a Position object."""
+    logger.debug(f"Parsing position: {position_data}")
     quantity = position_data['quantity']
     if not isinstance(quantity, str):
         quantity = str(quantity)
-    return Position(
+    
+    position = Position(
         description=position_data['description'],
         quantity=quantity,
         category=position_data['category'],
         price=float(position_data['price'])
     )
+    logger.debug(f"Created Position: {position.description}, {position.price:.2f}")
+    return position
 
 def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
     """Convert raw receipt data into a Receipt object."""
@@ -41,5 +46,17 @@ def parse_receipt_from_file(file_path: str, user_id: int) -> Receipt:
 
 def parse_receipt_from_gemini(gemini_output: str, user_id: int) -> Receipt:
     """Parse Gemini's output string into a Receipt object."""
-    data = json.loads(gemini_output)
-    return parse_receipt_data(data, user_id)
+    logger.info(f"Parsing Gemini output for user {user_id}")
+    try:
+        data = json.loads(gemini_output)
+        logger.debug("Successfully parsed Gemini JSON output")
+        
+        receipt = parse_receipt_data(data, user_id)
+        logger.info(f"Successfully created Receipt object: {receipt.merchant}, {receipt.total_amount:.2f}")
+        return receipt
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Gemini JSON output: {str(e)}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Error creating Receipt object: {str(e)}", exc_info=True)
+        raise

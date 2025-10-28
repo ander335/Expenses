@@ -7,6 +7,7 @@ Handles integration with Gemini for receipt parsing.
 import requests
 import base64
 from auth_data import GEMINI_API_KEY
+from logger_config import logger
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"  # Supported Gemini image endpoint
 RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Return ONLY a JSON object with these properties:
@@ -30,10 +31,13 @@ def parse_receipt_image(image_path):
     """
     Sends the receipt image to Gemini and returns the parsed total amount.
     """
+    logger.info(f"Reading receipt image from {image_path}")
+    
     # Read image and encode as base64
     with open(image_path, "rb") as img_file:
         image_bytes = img_file.read()
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    logger.debug("Image successfully encoded to base64")
 
     # Prepare image as data URL
     data_url = f"data:image/jpeg;base64,{image_b64}"
@@ -52,14 +56,22 @@ def parse_receipt_image(image_path):
         "Content-Type": "application/json"
     }
 
-    response = requests.post(
-        f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-        headers=headers,
-        json=payload
-    )
-    response.raise_for_status()
-    result = response.json()
-    parsed_data = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    logger.info("Sending request to Gemini API")
+    try:
+        response = requests.post(
+            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+            headers=headers,
+            json=payload
+        )
+        response.raise_for_status()
+        logger.info("Successfully received response from Gemini API")
+        
+        result = response.json()
+        parsed_data = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        logger.debug("Successfully extracted text content from Gemini response")
+    except requests.RequestException as e:
+        logger.error(f"Error calling Gemini API: {str(e)}", exc_info=True)
+        raise
     
     # Remove JSON code block markers if they exist
     if parsed_data.startswith('```json\n'):

@@ -6,6 +6,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from auth_data import BOT_TOKEN
 import os
 import json
+from logger_config import logger
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
     delete_receipt, get_monthly_summary
@@ -16,6 +17,8 @@ from gemini import parse_receipt_image
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    logger.info(f"Start command received from user {user.full_name} (ID: {user.id})")
+    
     db_user = User(user_id=user.id, name=user.full_name)
     get_or_create_user(db_user)
     help_text = (
@@ -30,11 +33,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"List command received from user {user.full_name} (ID: {user.id})")
+    
     try:
         n = int(context.args[0]) if context.args else 5  # Default to last 5 receipts
+        logger.info(f"Listing last {n} receipts for user {user.id}")
         if n <= 0:
             raise ValueError("Number must be positive")
     except (IndexError, ValueError):
+        logger.warning(f"Invalid list command argument from user {user.id}")
         await update.message.reply_text("Please specify a positive number: /list N")
         return
 
@@ -50,9 +58,14 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"Delete command received from user {user.full_name} (ID: {user.id})")
+    
     try:
         receipt_id = int(context.args[0])
+        logger.info(f"Attempting to delete receipt {receipt_id} for user {user.id}")
     except (IndexError, ValueError):
+        logger.warning(f"Invalid delete command argument from user {user.id}")
         await update.message.reply_text("Please specify a receipt ID: /delete ID")
         return
 
@@ -65,11 +78,16 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"Failed to delete receipt: {e}")
 
 async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"Summary command received from user {user.full_name} (ID: {user.id})")
+    
     try:
         n = int(context.args[0]) if context.args else 3  # Default to last 3 months
+        logger.info(f"Generating {n} month summary for user {user.id}")
         if n <= 0:
             raise ValueError("Number must be positive")
     except (IndexError, ValueError):
+        logger.warning(f"Invalid summary command argument from user {user.id}")
         await update.message.reply_text("Please specify a positive number: /summary N")
         return
 
@@ -94,25 +112,36 @@ AWAITING_APPROVAL = 1
 receipt_data = {}
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"Received photo from user {user.full_name} (ID: {user.id})")
+    
     photo = update.message.photo[-1]  # Get highest resolution photo
     file = await context.bot.get_file(photo.file_id)
     file_path = f"receipt_{photo.file_id}.jpg"
+    
+    logger.info(f"Downloading receipt photo (file_id: {photo.file_id})")
     await file.download_to_drive(file_path)
+    logger.info(f"Receipt photo downloaded to {file_path}")
 
     await update.message.reply_text("Processing your receipt...")
 
     try:
         # Parse image with Gemini
+        logger.info(f"Sending receipt image to Gemini for analysis")
         gemini_output = parse_receipt_image(file_path)
+        logger.info("Successfully received response from Gemini")
         
         # Parse the receipt data into object
         user_id = update.effective_user.id
+        logger.info(f"Parsing Gemini output for user {user_id}")
         parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
+        logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
         
         # Store the parsed receipt object
         receipt_data[user_id] = {
             "parsed_receipt": parsed_receipt
         }
+        logger.info(f"Temporary receipt data stored for user {user_id}")
         
         # Format the output for display
         output_text = f"Here's what I found in your receipt:\n\n"
@@ -146,6 +175,9 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     user_id = update.effective_user.id
+    user = update.effective_user
+    logger.info(f"Received receipt approval response from user {user.full_name} (ID: {user_id})")
+    
     user_data = receipt_data.get(user_id)
     
     if not user_data:
@@ -157,15 +189,20 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Get or create user
             user = User(user_id=user_id, name=update.effective_user.full_name)
             get_or_create_user(user)
+            logger.info(f"User verified/created in database: {user.name} (ID: {user.user_id})")
             
             # Get the already parsed receipt and save it
             receipt = user_data["parsed_receipt"]
+            logger.info(f"Saving receipt to database: {receipt.merchant}, {receipt.total_amount:.2f}")
             receipt_id = add_receipt(receipt)
+            logger.info(f"Receipt saved successfully with ID: {receipt_id}")
             
             await query.edit_message_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}")
         except Exception as e:
+            logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
             await query.edit_message_text(f"Failed to save receipt: {e}")
     else:  # reject
+        logger.info(f"Receipt rejected by user {user_id}")
         await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.")
     
     # Clean up stored data
