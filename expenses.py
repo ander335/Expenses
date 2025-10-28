@@ -269,6 +269,7 @@ async def backup_task(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in backup task: {str(e)}")
 
 def main():
+    logger.info("Starting Expenses Bot for Cloud Run Jobs...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
     # Create conversation handler for photo processing

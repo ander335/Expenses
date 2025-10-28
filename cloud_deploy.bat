@@ -4,29 +4,43 @@ setlocal
 REM Set your GCP project ID and region
 set PROJECT_ID=gen-lang-client-0006062814
 set REGION=europe-central2
+set REPOSITORY=europe-central2-docker.pkg.dev/%PROJECT_ID%/expenses-bot
 
 echo Building Docker image...
 docker build -t expenses-bot .
 
 echo.
-echo Configuring Docker for Google Container Registry...
-gcloud auth configure-docker
+REM echo Configuring authentication...
+REM gcloud auth activate-service-account --key-file=auth_data/gen-lang-client-0006062814-5e5e4e1479fc.json
+
+echo.
+REM echo Configuring Docker for Google Container Registry...
+REM gcloud auth configure-docker %REGION%-docker.pkg.dev --quiet
 
 echo.
 echo Tagging Docker image for GCP...
-docker tag expenses-bot gcr.io/%PROJECT_ID%/expenses-bot
+docker tag expenses-bot %REPOSITORY%/expenses-bot
 
 echo.
-echo Pushing image to Google Container Registry...
-docker push gcr.io/%PROJECT_ID%/expenses-bot
+echo Pushing image to Google Artifact Registry...
+docker push %REPOSITORY%/expenses-bot
 
 echo.
-echo Deploying to Cloud Run...
-gcloud run deploy expenses-bot ^
-    --image gcr.io/%PROJECT_ID%/expenses-bot ^
-    --platform managed ^
+echo Deploying to Cloud Run Job...
+gcloud run jobs update expenses-bot ^
+    --image %REPOSITORY%/expenses-bot ^
+    --project %PROJECT_ID% ^
     --region %REGION% ^
-    --allow-unauthenticated
+    --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest ^
+    --max-retries=0 ^
+    --parallelism=1 ^
+    --task-timeout=3600
+
+echo.
+echo Executing the Cloud Run Job...
+gcloud run jobs execute expenses-bot ^
+    --project %PROJECT_ID% ^
+    --region %REGION%
 
 echo.
 echo Deployment complete!
