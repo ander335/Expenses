@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler, CallbackQueryHandler
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from auth_data import BOT_TOKEN
+
 import os
 import json
 from logger_config import logger
@@ -16,27 +17,51 @@ from db import (
 from parse import parse_receipt_from_gemini
 from gemini import parse_receipt_image
 
+# List of allowed Telegram user IDs (integers)
+ALLOWED_USERS = [
+    98336105,
+]
+
+# Common help text for the bot
+HELP_TEXT = (
+    "Available commands:\n"
+    "• Send me a photo of your shop receipt to add it\n"
+    "• /list N - show last N expenses\n"
+    "• /delete ID - delete receipt with ID\n"
+    "• /summary N - show expenses summary for last N months\n"
+    "\nExamples:\n"
+    "- Send /list 5 to see last 5 receipts\n"
+    "- Send /summary 3 to see expenses for last 3 months"
+)
+
+async def check_user_access(update: Update) -> bool:
+    """Check if the user is allowed to use the bot."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        logger.warning(f"Unauthorized access attempt from user {update.effective_user.full_name} (ID: {user_id})")
+        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+        return False
+    return True
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Start command received from user {user.full_name} (ID: {user.id})")
     
+    if not await check_user_access(update):
+        return
+    
     db_user = User(user_id=user.id, name=user.full_name)
     get_or_create_user(db_user)
-    help_text = (
-        f'Hello {user.full_name}! I am your Expenses bot.\n\n'
-        'Available commands:\n'
-        '• Send me a photo of your shop receipt to add it\n'
-        '• /list N - show last N expenses\n'
-        '• /delete ID - delete receipt with ID\n'
-        '• /summary N - show expenses summary for last N months\n'
-    )
-    await update.message.reply_text(help_text)
+    welcome_text = f'Hello {user.full_name}! I am your Expenses bot.\n\n{HELP_TEXT}'
+    await update.message.reply_text(welcome_text)
 
 
 async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"List command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update):
+        return
     
     try:
         n = int(context.args[0]) if context.args else 5  # Default to last 5 receipts
@@ -63,6 +88,9 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     logger.info(f"Delete command received from user {user.full_name} (ID: {user.id})")
     
+    if not await check_user_access(update):
+        return
+    
     try:
         receipt_id = int(context.args[0])
         logger.info(f"Attempting to delete receipt {receipt_id} for user {user.id}")
@@ -82,6 +110,9 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Summary command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update):
+        return
     
     try:
         n = int(context.args[0]) if context.args else 3  # Default to last 3 months
@@ -116,6 +147,9 @@ receipt_data = {}
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Received photo from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update):
+        return ConversationHandler.END
     
     photo = update.message.photo[-1]  # Get highest resolution photo
     file = await context.bot.get_file(photo.file_id)
@@ -214,6 +248,17 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle any text messages that are not commands."""
+    user = update.effective_user
+    logger.info(f"Received text message from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update):
+        return
+    
+    reminder_text = f"👋 To add an expense, please send me a photo of your receipt.\n\n{HELP_TEXT}"
+    await update.message.reply_text(reminder_text)
+
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     """Background task to check and upload database changes."""
     try:
@@ -240,6 +285,9 @@ def main():
     app.add_handler(CommandHandler('delete', delete_receipt_cmd))
     app.add_handler(CommandHandler('summary', show_summary))
     app.add_handler(conv_handler)
+    
+    # Handler for text messages (not commands)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Add the backup task to the application
     app.job_queue.run_repeating(backup_task, interval=3600)  # Run every hour
