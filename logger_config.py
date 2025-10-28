@@ -5,6 +5,13 @@ Configures logging for the application
 
 import logging
 import sys
+import re
+
+def redact_sensitive_data(message):
+    """Redact sensitive information like API keys from error messages"""
+    # Redact API keys - matches key=<any characters> pattern
+    message = re.sub(r'[?&]key=[^& ]+', '?key=***', message)
+    return message
 
 def setup_logging():
     """Configure the logging system for the application"""

@@ -55,7 +55,10 @@ def parse_receipt_from_gemini(gemini_output: str, user_id: int) -> Receipt:
         logger.info(f"Successfully created Receipt object: {receipt.merchant}, {receipt.total_amount:.2f}")
         return receipt
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Gemini JSON output: {str(e)}", exc_info=True)
+        logger.error(f"Failed to parse Gemini JSON output: {str(e)}")
+        logger.debug("Failed Gemini output content:")
+        for line_num, line in enumerate(gemini_output.splitlines(), 1):
+            logger.debug(f"Line {line_num}: {line}")
         raise
     except Exception as e:
         logger.error(f"Error creating Receipt object: {str(e)}", exc_info=True)

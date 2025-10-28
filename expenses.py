@@ -7,6 +7,8 @@ from auth_data import BOT_TOKEN
 import os
 import json
 from logger_config import logger
+import asyncio
+from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
     delete_receipt, get_monthly_summary
@@ -212,6 +214,15 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def backup_task(context: ContextTypes.DEFAULT_TYPE):
+    """Background task to check and upload database changes."""
+    try:
+        if cloud_storage.should_upload():
+            cloud_storage.check_and_upload_db()
+            logger.info("Backup task completed successfully")
+    except Exception as e:
+        logger.error(f"Error in backup task: {str(e)}")
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
@@ -229,6 +240,9 @@ def main():
     app.add_handler(CommandHandler('delete', delete_receipt_cmd))
     app.add_handler(CommandHandler('summary', show_summary))
     app.add_handler(conv_handler)
+    
+    # Add the backup task to the application
+    app.job_queue.run_repeating(backup_task, interval=3600)  # Run every hour
     
     print('Bot is running...')
     app.run_polling()

@@ -1,6 +1,6 @@
 """
 db.py
-Manages SQLite database for expenses using SQLAlchemy ORM.
+Manages SQLite database for expenses using SQLAlchemy ORM with Google Cloud Storage integration.
 """
 
 from dataclasses import dataclass
@@ -8,6 +8,15 @@ from typing import List, Optional
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
+from cloud_storage import CloudStorage
+from logger_config import logger
+
+# Cloud Storage configuration
+BUCKET_NAME = "expenses_bot_bucket"  # You'll need to set this to your actual bucket name
+cloud_storage = CloudStorage(BUCKET_NAME)
+
+# Download the database file from cloud storage if it exists
+cloud_storage.download_db()
 
 DB_PATH = "sqlite:///expenses.db"
 Base = declarative_base()
@@ -94,6 +103,11 @@ def add_receipt(receipt: Receipt) -> int:
         # This will cascade and save the positions as well
         session.commit()
         receipt_id = receipt.receipt_id
+        
+        # Check if we should upload to cloud storage
+        if cloud_storage.should_upload():
+            cloud_storage.check_and_upload_db()
+            
     except Exception as e:
         session.rollback()
         raise e
@@ -125,6 +139,11 @@ def delete_receipt(receipt_id: int, user_id: int) -> bool:
             return False
         session.delete(receipt)
         session.commit()
+        
+        # Check if we should upload to cloud storage
+        if cloud_storage.should_upload():
+            cloud_storage.check_and_upload_db()
+            
         return True
     except Exception:
         session.rollback()

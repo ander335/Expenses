@@ -7,7 +7,23 @@ Handles integration with Gemini for receipt parsing.
 import requests
 import base64
 from auth_data import GEMINI_API_KEY
-from logger_config import logger
+from logger_config import logger, redact_sensitive_data
+
+def make_secure_request(url, api_key, **kwargs):
+    """
+    Make an HTTP request without exposing API key in error messages.
+    """
+    secure_url = f"{url}?key={api_key}"
+    try:
+        response = requests.post(secure_url, **kwargs)
+        response.raise_for_status()
+        return response
+    except requests.RequestException as e:
+        # Create a new exception without the sensitive URL
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            error_msg = f"{e.response.status_code} {e.response.reason}"
+        raise requests.RequestException(f"API request failed: {error_msg}")
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"  # Supported Gemini image endpoint
 RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Return ONLY a JSON object with these properties:
@@ -58,19 +74,20 @@ def parse_receipt_image(image_path):
 
     logger.info("Sending request to Gemini API")
     try:
-        response = requests.post(
-            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+        response = make_secure_request(
+            GEMINI_API_URL,
+            GEMINI_API_KEY,
             headers=headers,
             json=payload
         )
-        response.raise_for_status()
         logger.info("Successfully received response from Gemini API")
         
         result = response.json()
         parsed_data = result["candidates"][0]["content"]["parts"][0]["text"].strip()
         logger.debug("Successfully extracted text content from Gemini response")
     except requests.RequestException as e:
-        logger.error(f"Error calling Gemini API: {str(e)}", exc_info=True)
+        error_message = f"Error calling Gemini API: {str(e)}"
+        logger.error(redact_sensitive_data(error_message))
         raise
     
     # Remove JSON code block markers if they exist
