@@ -11,11 +11,11 @@ docker build -t expenses-bot .
 
 echo.
 REM echo Configuring authentication...
-REM gcloud auth activate-service-account --key-file=auth_data/gen-lang-client-0006062814-5e5e4e1479fc.json
+REM call gcloud auth activate-service-account --key-file=auth_data/gen-lang-client-0006062814-5e5e4e1479fc.json
 
 echo.
 REM echo Configuring Docker for Google Container Registry...
-REM gcloud auth configure-docker %REGION%-docker.pkg.dev --quiet
+REM call gcloud auth configure-docker %REGION%-docker.pkg.dev --quiet
 
 echo.
 echo Tagging Docker image for GCP...
@@ -27,7 +27,7 @@ docker push %REPOSITORY%/expenses-bot
 
 echo.
 echo Deploying to Cloud Run Job...
-gcloud run jobs update expenses-bot ^
+call gcloud run jobs update expenses-bot ^
     --image %REPOSITORY%/expenses-bot ^
     --project %PROJECT_ID% ^
     --region %REGION% ^
@@ -38,7 +38,7 @@ gcloud run jobs update expenses-bot ^
 
 echo.
 echo Executing the Cloud Run Job...
-gcloud run jobs execute expenses-bot ^
+call gcloud run jobs execute expenses-bot ^
     --project %PROJECT_ID% ^
     --region %REGION%
 

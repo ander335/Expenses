@@ -29,9 +29,11 @@ HELP_TEXT = (
     "• /list N - show last N expenses\n"
     "• /delete ID - delete receipt with ID\n"
     "• /summary N - show expenses summary for last N months\n"
+    "• /flush - upload database to cloud storage\n"
     "\nExamples:\n"
     "- Send /list 5 to see last 5 receipts\n"
-    "- Send /summary 3 to see expenses for last 3 months"
+    "- Send /summary 3 to see expenses for last 3 months\n"
+    "- Send /flush to backup database to cloud"
 )
 
 async def check_user_access(update: Update) -> bool:
@@ -136,6 +138,32 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"total: {month_data['total']:.2f}\n")
     
     await update.message.reply_text(text)
+
+
+async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"Flush command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update):
+        return
+    
+    try:
+        await update.message.reply_text("Uploading database to cloud storage...")
+        logger.info(f"Starting database upload for user {user.id}")
+        
+        # Force upload the database to Google Cloud Storage
+        success = cloud_storage.check_and_upload_db()
+        
+        if success:
+            logger.info(f"Database successfully uploaded to GCS by user {user.id}")
+            await update.message.reply_text("✅ Database successfully uploaded to Google Cloud Storage!")
+        else:
+            logger.warning(f"Database upload failed or no changes detected for user {user.id}")
+            await update.message.reply_text("⚠️ Database upload failed or no changes were detected.")
+            
+    except Exception as e:
+        logger.error(f"Error during database flush for user {user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to upload database: {str(e)}")
 
 
 # States for conversation handler
@@ -285,6 +313,7 @@ def main():
     app.add_handler(CommandHandler('list', list_receipts))
     app.add_handler(CommandHandler('delete', delete_receipt_cmd))
     app.add_handler(CommandHandler('summary', show_summary))
+    app.add_handler(CommandHandler('flush', flush_database))
     app.add_handler(conv_handler)
     
     # Handler for text messages (not commands)
