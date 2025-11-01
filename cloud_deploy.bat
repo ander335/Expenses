@@ -127,8 +127,7 @@ if /i "%MODE%"=="job" (
         --cpu 1 ^
         --memory 512Mi ^
         --min-instances 0 ^
-        --max-instances 1 ^
-        --concurrency 5
+        --max-instances 1
 
     echo.
     echo Ensuring all traffic points to the latest revision...

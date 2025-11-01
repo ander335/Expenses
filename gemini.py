@@ -63,6 +63,11 @@ Please update the JSON data based on the user's comments. Return ONLY the update
 3. Update the "description" field to mention what was changed based on user comments
 4. If currency conversion is requested, convert all amounts appropriately
 
+Language requirement:
+- Do NOT translate existing fields from the original_json. Preserve their original language and values unless explicitly changed by the user comments.
+- Apply the user's corrections exactly as given. If the user provides new text in another language, keep it as provided (no translation).
+- Write ONLY the "description" field in ENGLISH, appending a concise summary of the changes and any relevant notes. All other fields should remain in their existing language. Keep numeric values and dates unchanged except for requested conversions.
+
 {user_adjustment_instructions}"""
 
 VOICE_TO_RECEIPT_PROMPT = """Based on the text provided by the user describing their purchase, create a receipt structure. Follow these instructions:
@@ -74,6 +79,9 @@ VOICE_TO_RECEIPT_PROMPT = """Based on the text provided by the user describing t
 - Choose the most appropriate category from the available list
 - Set quantity to 1 if not specified
 - If the user provides any non-related information to the receipt (context, stories, additional comments), summarize it and put it in the receipt description field. Write the description in a direct, subjectless style without referring to "the user" (e.g., "Not very tasty, caused digestive issues" instead of "The user commented it was not very tasty")
+
+Language requirement:
+- Always respond in ENGLISH only. If the user's text is in another language, translate any descriptions and merchant names to English. Ensure all JSON string values (description, category, merchant, positions[].description, positions[].category) are English. Numeric values and dates should not be translated.
 
 Return ONLY a JSON object with this structure:
 {receipt_structure}
