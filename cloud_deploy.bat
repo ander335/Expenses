@@ -120,6 +120,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest ^
+        --set-env-vars=USE_WEBHOOK=true ^
         --platform managed ^
         --allow-unauthenticated ^
         --port 8080 ^

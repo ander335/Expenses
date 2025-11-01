@@ -9,6 +9,9 @@ import os
 import json
 from logger_config import logger
 import asyncio
+from flask import Flask, request
+import threading
+import requests
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
@@ -367,9 +370,148 @@ async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in backup task: {str(e)}")
 
+# Environment variables
+USE_WEBHOOK = os.getenv('USE_WEBHOOK', 'false').lower() == 'true'
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+PORT = int(os.getenv('PORT', 8080))
+
+def get_cloud_run_service_url():
+    """
+    Automatically detect the Cloud Run service URL using metadata service.
+    Returns the full HTTPS URL of the current Cloud Run service.
+    
+    Security Note: Uses HTTP to access Google's internal metadata service
+    (metadata.google.internal) which is only accessible from within the
+    Cloud Run instance and is Google's intended design.
+    """
+    try:
+        # Cloud Run metadata service endpoint (internal network only)
+        headers = {"Metadata-Flavor": "Google"}
+        
+        # Method 1: Try to construct URL from well-known metadata endpoints
+        try:
+            # Get project ID (string format)
+            project_response = requests.get(
+                "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+                headers=headers, timeout=5
+            )
+            
+            # Get region from zone info
+            zone_response = requests.get(
+                "http://metadata.google.internal/computeMetadata/v1/instance/zone",
+                headers=headers, timeout=5
+            )
+            
+            if project_response.status_code == 200 and zone_response.status_code == 200:
+                project_id = project_response.text.strip()
+                zone_path = zone_response.text.strip()
+                # Extract region from zone (e.g., "projects/123/zones/europe-central2-a" -> "europe-central2")
+                region = zone_path.split('/')[-1].rsplit('-', 1)[0]
+                
+                # Try to get service name from environment or construct it
+                service_name = os.getenv('K_SERVICE', 'expenses-bot')
+                
+                # Get project number for the actual URL format
+                project_num_response = requests.get(
+                    "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id",
+                    headers=headers, timeout=5
+                )
+                
+                if project_num_response.status_code == 200:
+                    project_number = project_num_response.text.strip()
+                    # Construct the HTTPS URL (Cloud Run services always use this format)
+                    service_url = f"https://{service_name}-{project_number}.{region}.run.app"
+                    logger.info(f"Constructed Cloud Run service URL: {service_url}")
+                    return service_url
+                else:
+                    # Fallback: use project ID instead of number (less common but possible)
+                    service_url = f"https://{service_name}-{project_id}.{region}.run.app"
+                    logger.info(f"Constructed Cloud Run service URL (fallback): {service_url}")
+                    return service_url
+                
+        except Exception as e:
+            logger.debug(f"Could not construct URL from standard metadata: {e}")
+        
+        # Method 2: Check environment variables that Cloud Run might provide
+        k_service = os.getenv('K_SERVICE')
+        if k_service:
+            # If we have the service name, try to construct a reasonable URL
+            # This is a fallback that assumes standard Cloud Run URL format
+            service_url = f"https://{k_service}-638029577033.europe-central2.run.app"
+            logger.info(f"Using service name from K_SERVICE: {service_url}")
+            return service_url
+        
+        # Method 3: Fallback to environment variable if provided
+        if WEBHOOK_URL:
+            # Ensure environment variable URL is HTTPS
+            webhook_url = WEBHOOK_URL
+            if webhook_url.startswith('http://'):
+                webhook_url = webhook_url.replace('http://', 'https://', 1)
+                logger.warning(f"Converted HTTP environment variable to HTTPS: {webhook_url}")
+            logger.info(f"Using webhook URL from environment variable: {webhook_url}")
+            return webhook_url
+        
+        # Method 4: Last resort - use the known working URL pattern
+        logger.warning("Using hardcoded URL pattern as last resort")
+        return "https://expenses-bot-638029577033.europe-central2.run.app"
+        
+    except Exception as e:
+        logger.error(f"Error detecting Cloud Run service URL: {e}")
+        # Return the known working URL as absolute fallback
+        return "https://expenses-bot-638029577033.europe-central2.run.app"
+
+# Flask app for webhook mode
+app = Flask(__name__)
+
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+def webhook():
+    """Handle incoming webhook requests."""
+    try:
+        json_data = request.get_json(force=True)
+        if json_data:
+            logger.debug("Received webhook request")
+            update = Update.de_json(json_data, application.bot)
+            # Use asyncio to run the async function
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.process_update(update))
+            loop.close()
+            logger.debug("Webhook request processed successfully")
+        return 'OK'
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
+        return 'Error', 500
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint."""
+    return 'OK'
+
+@app.route('/')
+def root():
+    """Root endpoint for basic info."""
+    return 'Expenses Bot is running in webhook mode'
+
+def run_webhook_server():
+    """Run Flask server for webhook mode."""
+    logger.info(f"Starting webhook server on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
+
+# Global application instance for webhook mode
+application = None
+
 def main():
-    logger.info("Starting Expenses Bot for Cloud Run Jobs...")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    global application
+    
+    if USE_WEBHOOK:
+        logger.info("Starting Expenses Bot in webhook mode for Cloud Run Service...")
+        logger.info(f"Listening on port: {PORT}")
+        # Note: Webhook URL will be auto-detected from Cloud Run metadata
+    else:
+        logger.info("Starting Expenses Bot in polling mode...")
+    
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
     
     # Create conversation handler for photo processing
     conv_handler = ConversationHandler(
@@ -380,24 +522,51 @@ def main():
         fallbacks=[]
     )
     
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('list', list_receipts))
-    app.add_handler(CommandHandler('delete', delete_receipt_cmd))
-    app.add_handler(CommandHandler('summary', show_summary))
-    app.add_handler(CommandHandler('flush', flush_database))
-    app.add_handler(conv_handler)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('list', list_receipts))
+    application.add_handler(CommandHandler('delete', delete_receipt_cmd))
+    application.add_handler(CommandHandler('summary', show_summary))
+    application.add_handler(CommandHandler('flush', flush_database))
+    application.add_handler(conv_handler)
     
     # Handler for persistent buttons
-    app.add_handler(CallbackQueryHandler(handle_persistent_buttons, pattern="^persistent_"))
+    application.add_handler(CallbackQueryHandler(handle_persistent_buttons, pattern="^persistent_"))
     
     # Handler for text messages (not commands)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Add the backup task to the application
-    app.job_queue.run_repeating(backup_task, interval=3600)  # Run every hour
+    application.job_queue.run_repeating(backup_task, interval=3600)  # Run every hour
     
-    print('Bot is running...')
-    app.run_polling()
+    if USE_WEBHOOK:
+        # Auto-detect the service URL
+        detected_url = get_cloud_run_service_url()
+        logger.info(f"Detected webhook URL: {detected_url}")
+        
+        # Initialize the application
+        asyncio.get_event_loop().run_until_complete(application.initialize())
+        
+        # Set webhook
+        webhook_url = f"{detected_url}/{BOT_TOKEN}"
+        logger.info(f"Setting webhook URL: {webhook_url}")
+        asyncio.get_event_loop().run_until_complete(
+            application.bot.set_webhook(url=webhook_url)
+        )
+        logger.info("Webhook set successfully")
+        
+        # Start the application (needed for job queue and handlers)
+        asyncio.get_event_loop().run_until_complete(application.start())
+        logger.info("Application started successfully")
+        
+        print(f'Bot is running in webhook mode on port {PORT}...')
+        logger.info(f'Bot is running in webhook mode on port {PORT}...')
+        
+        # Run Flask server (this will block)
+        run_webhook_server()
+    else:
+        print('Bot is running in polling mode...')
+        logger.info('Bot is running in polling mode...')
+        application.run_polling()
 
 if __name__ == '__main__':
 	main()

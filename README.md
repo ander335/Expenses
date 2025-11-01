@@ -2,6 +2,24 @@
 # Expenses Bot
 ProjectId = gen-lang-client-0006062814
 
+## Bot Modes
+
+The bot supports two operation modes:
+
+### 1. Polling Mode (Default)
+- Bot actively polls Telegram servers for updates
+- Suitable for local development and Cloud Run Jobs
+- No additional setup required
+
+### 2. Webhook Mode
+- Telegram sends updates to your bot via HTTP webhooks
+- More efficient for production deployment
+- Required for Cloud Run Services
+- Configured via environment variables:
+  - `USE_WEBHOOK=true` - Enable webhook mode
+  - `WEBHOOK_URL` - Your service URL (automatically set in deployment)
+  - `PORT` - Port to listen on (default: 8080)
+
 ## Local Setup
 - Before running the bot, make sure to set up Google Cloud Storage:
   1. Create a Google Cloud project and enable Cloud Storage API
@@ -24,9 +42,22 @@ ProjectId = gen-lang-client-0006062814
 
 1. **Prepare the Environment Variables**
    Create a `.env` file with your configuration, check .env.example
-   ```
 
-2. **Build and Test Docker Image Locally**
+2. **Choose Deployment Mode**
+   
+   **For Cloud Run Job (Polling Mode):**
+   ```powershell
+   .\cloud_deploy.bat job
+   ```
+   
+   **For Cloud Run Service (Webhook Mode):**
+   ```powershell
+   .\cloud_deploy.bat service
+   ```
+   
+   The service mode automatically configures webhook environment variables.
+
+3. **Build and Test Docker Image Locally**
    
    You can build and test the Docker image in two ways:
 
@@ -40,25 +71,28 @@ ProjectId = gen-lang-client-0006062814
    # Build the Docker image
    docker build -t expenses-bot .
 
-   # Test the image locally
+   # Test the image locally (polling mode)
    docker run --env-file .env expenses-bot
+
+   # Test the image locally (webhook mode) 
+   docker run --env-file .env -e USE_WEBHOOK=true -e WEBHOOK_URL=http://localhost:8080 -p 8080:8080 expenses-bot
    ```
 
-3. **Deploy to Google Cloud Run**
+4. **Deploy to Google Cloud Run**
    
-   You can deploy to Google Cloud Run in two ways:
-
-   **Option 1:** Run the provided deployment script:
+   **Option 1:** Use the deployment script:
    ```powershell
-   .\cloud_deploy.bat
+   # Deploy as Cloud Run Job (polling mode)
+   .\cloud_deploy.bat job
+   
+   # Deploy as Cloud Run Service (webhook mode)
+   .\cloud_deploy.bat service
+   
+   # Skip Docker build if image already exists
+   .\cloud_deploy.bat service --skip-build
    ```
-   The script will automatically:
-   - Build the Docker image
-   - Configure Docker for GCR
-   - Tag and push the image
-   - Deploy to Cloud Run
-
-   **Option 2:** Run commands manually:
+   
+   **Option 2:** Run commands manually (for service deployment):
    ```powershell
    # Configure Docker to use Google Container Registry
    gcloud auth configure-docker
@@ -69,12 +103,13 @@ ProjectId = gen-lang-client-0006062814
    # Push the image to Google Container Registry
    docker push gcr.io/[PROJECT-ID]/expenses-bot
 
-   # Deploy to Cloud Run
+   # Deploy to Cloud Run Service (webhook mode)
    gcloud run deploy expenses-bot `
      --image gcr.io/[PROJECT-ID]/expenses-bot `
      --platform managed `
      --region [REGION] `
-     --allow-unauthenticated
+     --allow-unauthenticated `
+     --set-env-vars USE_WEBHOOK=true,WEBHOOK_URL=https://[SERVICE-URL]
    ```
 
 4. **Configure Environment Variables in Cloud Run**
