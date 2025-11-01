@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 REM Usage: cloud_deploy.bat <mode> [--skip-build | -s]
 REM   mode             : Required. Either "job" or "service"
@@ -126,12 +126,28 @@ if /i "%MODE%"=="job" (
         --port 8080 ^
         --cpu 1 ^
         --memory 512Mi ^
-        --min-instances 1 ^
+        --min-instances 0 ^
         --max-instances 1
 
+    echo.
+    echo Ensuring all traffic points to the latest revision...
+    call gcloud run services update-traffic expenses-bot --project=%PROJECT_ID% --region=%REGION% --to-latest
     if %errorlevel% neq 0 (
-        echo ERROR: Failed to deploy Cloud Run Service.
-        exit /b 1
+        echo WARNING: Failed to update traffic to the latest revision.
+    )
+    
+    echo.
+    echo Cleaning up old revisions...
+    echo Keeping only the latest revision and deleting all others...
+    set /a count=0
+    for /f "tokens=* usebackq" %%r in (`gcloud run revisions list --service expenses-bot --project^=%PROJECT_ID% --region^=%REGION% --format^="value(metadata.name)" --sort-by^="~metadata.creationTimestamp"`) do (
+        set /a count+=1
+        if !count! gtr 1 (
+            echo Deleting old revision %%r
+            call gcloud run revisions delete %%r --project=%PROJECT_ID% --region=%REGION% --quiet
+        ) else (
+            echo Keeping latest revision %%r
+        )
     )
 )
 
