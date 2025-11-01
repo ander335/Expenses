@@ -30,6 +30,7 @@ HELP_TEXT = (
     "Available commands:\n"
     "• Send me a photo of your shop receipt to add it\n"
     "• Send me a voice message describing your purchase to add it\n"
+    "• /add TEXT - add a receipt from a text description\n"
     "• Add a caption to your photo/voice to override/correct any details\n"
     "• /list N - show last N expenses\n"
     "• /delete ID - delete receipt with ID\n"
@@ -196,6 +197,45 @@ import time
 # Import the new update function
 from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt
 
+async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None):
+    """Send a preview of the parsed receipt with Approve/Reject buttons and store temp data."""
+    user_id = update.effective_user.id
+    # Store the parsed receipt object and original JSON
+    timestamp = str(int(time.time()))
+    receipt_data[user_id] = {
+        "parsed_receipt": parsed_receipt,
+        "original_json": original_json,
+        "user_comment": None,
+        "latest_timestamp": timestamp,
+        "latest_message_id": None
+    }
+
+    # Format the output for display
+    output_text = f"{preface}\n\n"
+    if user_text_line:
+        output_text += f"{user_text_line}\n\n"
+    if parsed_receipt.description:
+        output_text += f"💬 Analysis: {parsed_receipt.description}\n\n"
+    output_text += f"Merchant: {parsed_receipt.merchant}\n"
+    output_text += f"Category: {parsed_receipt.category}\n"
+    output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
+    output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
+    output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
+    output_text += f"💡 To make changes, just type what you'd like to adjust or send a voice message"
+
+    # Create approval buttons with timestamp
+    keyboard = [[
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Send the message and store its ID
+    sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
+    receipt_data[user_id]["latest_message_id"] = sent_message.message_id
+    logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
+    return AWAITING_APPROVAL
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Received photo from user {user.full_name} (ID: {user.id})")
@@ -232,43 +272,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
         logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
         
-        # Store the parsed receipt object and original JSON
-        timestamp = str(int(time.time()))
-        receipt_data[user_id] = {
-            "parsed_receipt": parsed_receipt,
-            "original_json": gemini_output,  # Store the original JSON response
-            "user_comment": user_comment,
-            "latest_timestamp": timestamp,
-            "latest_message_id": None  # Will be set after sending the message
-        }
-        logger.info(f"Temporary receipt data stored for user {user_id} with timestamp {timestamp}")
-        
-        # Format the output for display
-        output_text = f"Here's what I found in your receipt:\n\n"
-        if user_comment:
-            output_text += f"📝 Your comment: {user_comment}\n\n"
-        if parsed_receipt.description:
-            output_text += f"💬 Analysis: {parsed_receipt.description}\n\n"
-        output_text += f"Merchant: {parsed_receipt.merchant}\n"
-        output_text += f"Category: {parsed_receipt.category}\n"
-        output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
-        output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
-        output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
-        output_text += f"💡 To make changes, just type what you'd like to adjust or send a voice message (e.g., 'change date to 25-10-2024', 'convert to USD')"
-
-        # Create approval buttons with timestamp
-        keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send the message and store its ID
-        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
-        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
-        logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
-        
-        return AWAITING_APPROVAL
+        # Present preview with approval buttons using shared presenter
+        return await present_parsed_receipt(
+            update,
+            context,
+            parsed_receipt=parsed_receipt,
+            original_json=gemini_output,
+            preface="Here's what I found in your receipt:",
+            user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None)
+        )
         
     except Exception as e:
         logger.error(f"Failed to process receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
@@ -385,41 +397,15 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
         logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
         
-        # Update stored data with new parsing result and new timestamp
-        timestamp = str(int(time.time()))
-        receipt_data[user_id] = {
-            "parsed_receipt": updated_receipt,
-            "original_json": updated_json,  # Update the JSON for further iterations
-            "user_comment": user_comment,
-            "latest_timestamp": timestamp,
-            "latest_message_id": None  # Will be set after sending the message
-        }
-        
-        # Format the updated output for display
-        output_text = f"Here's the updated receipt parsing:\n\n"
-        output_text += f"📝 Your changes: {user_comment}\n\n"
-        if updated_receipt.description:
-            output_text += f"💬 Analysis: {updated_receipt.description}\n\n"
-        output_text += f"Merchant: {updated_receipt.merchant}\n"
-        output_text += f"Category: {updated_receipt.category}\n"
-        output_text += f"Total Amount: {updated_receipt.total_amount}\n"
-        output_text += f"Date: {updated_receipt.date or 'Unknown'}\n"
-        output_text += f"\nNumber of items: {len(updated_receipt.positions)}\n\n"
-        output_text += f"💡 To make more changes, just type what else you'd like to adjust"
-
-        # Create approval buttons with new timestamp
-        keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send the new message and store its ID
-        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
-        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
-        logger.info(f"Stored new message ID {sent_message.message_id} for user {user_id}")
-        
-        return AWAITING_APPROVAL
+        # Present updated preview using shared presenter
+        return await present_parsed_receipt(
+            update,
+            context,
+            parsed_receipt=updated_receipt,
+            original_json=updated_json,
+            preface="Here's the updated receipt:",
+            user_text_line=f"📝 Your changes: {user_comment}"
+        )
         
     except Exception as e:
         logger.error(f"Failed to process user comment for user {user_id}: {str(e)}", exc_info=True)
@@ -462,43 +448,16 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info(f"Parsing Gemini output for user {user_id}")
         parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
         logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
-        
-        # Store the parsed receipt object and original JSON
-        timestamp = str(int(time.time()))
-        receipt_data[user_id] = {
-            "parsed_receipt": parsed_receipt,
-            "original_json": gemini_output,  # Store the original JSON response
-            "user_comment": None,
-            "latest_timestamp": timestamp,
-            "latest_message_id": None  # Will be set after sending the message
-        }
-        logger.info(f"Temporary receipt data stored for user {user_id} with timestamp {timestamp}")
-        
-        # Format the output for display
-        output_text = f"Here's what I understood from your voice message:\n\n"
-        output_text += f"🎙️ Your message: \"{transcribed_text}\"\n\n"
-        if parsed_receipt.description:
-            output_text += f"💬 Analysis: {parsed_receipt.description}\n\n"
-        output_text += f"Merchant: {parsed_receipt.merchant}\n"
-        output_text += f"Category: {parsed_receipt.category}\n"
-        output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
-        output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
-        output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
-        output_text += f"💡 To make changes, just type what you'd like to adjust or send another voice message"
 
-        # Create approval buttons with timestamp
-        keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send the message and store its ID
-        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
-        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
-        logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
-        
-        return AWAITING_APPROVAL
+        # Present preview with approval buttons
+        return await present_parsed_receipt(
+            update,
+            context,
+            parsed_receipt=parsed_receipt,
+            original_json=gemini_output,
+            preface="Here's what I understood from your voice message:",
+            user_text_line=f"🎙️ Your message: \"{transcribed_text}\""
+        )
         
     except Exception as e:
         logger.error(f"Failed to process voice receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
@@ -564,41 +523,15 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
         updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
         logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
         
-        # Update stored data with new parsing result and new timestamp
-        timestamp = str(int(time.time()))
-        receipt_data[user_id] = {
-            "parsed_receipt": updated_receipt,
-            "original_json": updated_json,  # Update the JSON for further iterations
-            "user_comment": user_comment,
-            "latest_timestamp": timestamp,
-            "latest_message_id": None  # Will be set after sending the message
-        }
-        
-        # Format the updated output for display
-        output_text = f"Here's the updated receipt parsing:\n\n"
-        output_text += f"🎙️ Your voice message: \"{user_comment}\"\n\n"
-        if updated_receipt.description:
-            output_text += f"💬 Analysis: {updated_receipt.description}\n\n"
-        output_text += f"Merchant: {updated_receipt.merchant}\n"
-        output_text += f"Category: {updated_receipt.category}\n"
-        output_text += f"Total Amount: {updated_receipt.total_amount}\n"
-        output_text += f"Date: {updated_receipt.date or 'Unknown'}\n"
-        output_text += f"\nNumber of items: {len(updated_receipt.positions)}\n\n"
-        output_text += f"💡 To make more changes, type text or send another voice message"
-
-        # Create approval buttons with new timestamp
-        keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Send the new message and store its ID
-        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
-        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
-        logger.info(f"Stored new message ID {sent_message.message_id} for user {user_id}")
-        
-        return AWAITING_APPROVAL
+        # Present updated preview using shared presenter
+        return await present_parsed_receipt(
+            update,
+            context,
+            parsed_receipt=updated_receipt,
+            original_json=updated_json,
+            preface="Here's the updated receipt:",
+            user_text_line=f"🎙️ Your voice message: \"{user_comment}\""
+        )
         
     except Exception as e:
         logger.error(f"Failed to process voice comment for user {user_id}: {str(e)}", exc_info=True)
@@ -680,7 +613,48 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update):
         return
     
-    reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
+    reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase, or\n• ✍️ Use /add followed by a text description (e.g., /add Bought sushi for 20 USD at Kyoto)\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
+
+async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /add command to create a receipt from a text description."""
+    user = update.effective_user
+    logger.info(f"Add command received from user {user.full_name} (ID: {user.id})")
+
+    if not await check_user_access(update):
+        return
+
+    # Extract the text after /add
+    user_text = " ".join(context.args) if context.args else ""
+    if not user_text:
+        await update.message.reply_text(
+            "Please provide a purchase description after /add. Example: /add Bought groceries for 25 EUR at Tesco yesterday",
+            reply_markup=get_persistent_keyboard()
+        )
+        return
+
+    try:
+        await update.message.reply_text("📝 Processing your text receipt...")
+        logger.info("Converting text to receipt structure via Gemini")
+        gemini_output = parse_voice_to_receipt(user_text)
+        logger.info("Successfully received receipt structure from Gemini for text input")
+
+        user_id = update.effective_user.id
+        logger.info(f"Parsing Gemini output for user {user_id}")
+        parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
+        logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
+
+        return await present_parsed_receipt(
+            update,
+            context,
+            parsed_receipt=parsed_receipt,
+            original_json=gemini_output,
+            preface="Here's what I understood from your text:",
+            user_text_line=f"📝 Your text: \"{user_text}\""
+        )
+    except Exception as e:
+        logger.error(f"Failed to process /add text receipt for user {user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Failed to process text receipt: {e}")
+        return ConversationHandler.END
     await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
@@ -826,7 +800,8 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.PHOTO, handle_photo),
-            MessageHandler(filters.VOICE, handle_voice_receipt)
+            MessageHandler(filters.VOICE, handle_voice_receipt),
+            CommandHandler('add', add_text_receipt),
         ],
         states={
             AWAITING_APPROVAL: [
