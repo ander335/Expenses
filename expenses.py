@@ -9,8 +9,6 @@ import os
 import json
 from logger_config import logger
 import asyncio
-from flask import Flask, request
-import threading
 import requests
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
@@ -460,45 +458,7 @@ def get_cloud_run_service_url():
         # Return the known working URL as absolute fallback
         return "https://expenses-bot-638029577033.europe-central2.run.app"
 
-# Flask app for webhook mode
-app = Flask(__name__)
-
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def webhook():
-    """Handle incoming webhook requests."""
-    try:
-        json_data = request.get_json(force=True)
-        if json_data:
-            logger.debug("Received webhook request")
-            update = Update.de_json(json_data, application.bot)
-            # Use asyncio to run the async function
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.process_update(update))
-            loop.close()
-            logger.debug("Webhook request processed successfully")
-        return 'OK'
-    except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
-        return 'Error', 500
-
-@app.route('/health')
-def health_check():
-    """Health check endpoint."""
-    return 'OK'
-
-@app.route('/')
-def root():
-    """Root endpoint for basic info."""
-    return 'Expenses Bot is running in webhook mode'
-
-def run_webhook_server():
-    """Run Flask server for webhook mode."""
-    logger.info(f"Starting webhook server on port {PORT}")
-    app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
-
-# Global application instance for webhook mode
+# Global application instance
 application = None
 
 def main():
@@ -542,27 +502,17 @@ def main():
         # Auto-detect the service URL
         detected_url = get_cloud_run_service_url()
         logger.info(f"Detected webhook URL: {detected_url}")
-        
-        # Initialize the application
-        asyncio.get_event_loop().run_until_complete(application.initialize())
-        
-        # Set webhook
+
+        # Use PTB's built-in aiohttp webhook server; this manages a single, long-lived event loop.
         webhook_url = f"{detected_url}/{BOT_TOKEN}"
-        logger.info(f"Setting webhook URL: {webhook_url}")
-        asyncio.get_event_loop().run_until_complete(
-            application.bot.set_webhook(url=webhook_url)
+        logger.info(f"Starting built-in webhook server with URL: {webhook_url}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=BOT_TOKEN,
+            webhook_url=webhook_url,
+            drop_pending_updates=True,
         )
-        logger.info("Webhook set successfully")
-        
-        # Start the application (needed for job queue and handlers)
-        asyncio.get_event_loop().run_until_complete(application.start())
-        logger.info("Application started successfully")
-        
-        print(f'Bot is running in webhook mode on port {PORT}...')
-        logger.info(f'Bot is running in webhook mode on port {PORT}...')
-        
-        # Run Flask server (this will block)
-        run_webhook_server()
     else:
         print('Bot is running in polling mode...')
         logger.info('Bot is running in polling mode...')
