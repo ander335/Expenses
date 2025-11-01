@@ -187,6 +187,9 @@ AWAITING_APPROVAL = 1
 # Store temporary data
 receipt_data = {}
 
+# Import the new update function
+from gemini import parse_receipt_image, update_receipt_with_comment
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Received photo from user {user.full_name} (ID: {user.id})")
@@ -223,9 +226,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
         logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
         
-        # Store the parsed receipt object
+        # Store the parsed receipt object and original JSON
         receipt_data[user_id] = {
             "parsed_receipt": parsed_receipt,
+            "original_json": gemini_output,  # Store the original JSON response
             "user_comment": user_comment
         }
         logger.info(f"Temporary receipt data stored for user {user_id}")
@@ -240,7 +244,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output_text += f"Category: {parsed_receipt.category}\n"
         output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
         output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
-        output_text += f"\nNumber of items: {len(parsed_receipt.positions)}"
+        output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
+        output_text += f"💡 To make changes, just type what you'd like to adjust (e.g., 'change date to 25-10-2024', 'convert to USD')"
 
         # Create approval buttons
         keyboard = [[
@@ -293,15 +298,81 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
             await query.edit_message_text(f"Failed to save receipt: {e}", reply_markup=get_persistent_keyboard())
+        
+        # Clean up stored data
+        if user_id in receipt_data:
+            del receipt_data[user_id]
+        return ConversationHandler.END
+    
     else:  # reject
         logger.info(f"Receipt rejected by user {user_id}")
         await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.", reply_markup=get_persistent_keyboard())
+        
+        # Clean up stored data
+        if user_id in receipt_data:
+            del receipt_data[user_id]
+        return ConversationHandler.END
+
+
+async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle user text comments for receipt adjustments."""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    user_comment = update.message.text
     
-    # Clean up stored data
-    if user_id in receipt_data:
-        del receipt_data[user_id]
+    logger.info(f"Received user comment from {user.full_name} (ID: {user_id}): {user_comment}")
     
-    return ConversationHandler.END
+    user_data = receipt_data.get(user_id)
+    if not user_data:
+        await update.message.reply_text("Sorry, I couldn't find your receipt data. Please start over by sending a new receipt photo.")
+        return ConversationHandler.END
+    
+    await update.message.reply_text("Processing your changes...")
+    
+    try:
+        # Get the original JSON and send update request to Gemini
+        original_json = user_data["original_json"]
+        logger.info(f"Sending update request to Gemini with user comment: {user_comment}")
+        updated_json = update_receipt_with_comment(original_json, user_comment)
+        logger.info("Successfully received updated JSON from Gemini")
+        
+        # Parse the updated receipt data
+        updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
+        logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
+        
+        # Update stored data with new parsing result
+        receipt_data[user_id] = {
+            "parsed_receipt": updated_receipt,
+            "original_json": updated_json,  # Update the JSON for further iterations
+            "user_comment": user_comment
+        }
+        
+        # Format the updated output for display
+        output_text = f"Here's the updated receipt parsing:\n\n"
+        output_text += f"📝 Your changes: {user_comment}\n\n"
+        if updated_receipt.description:
+            output_text += f"💬 Analysis: {updated_receipt.description}\n\n"
+        output_text += f"Merchant: {updated_receipt.merchant}\n"
+        output_text += f"Category: {updated_receipt.category}\n"
+        output_text += f"Total Amount: {updated_receipt.total_amount}\n"
+        output_text += f"Date: {updated_receipt.date or 'Unknown'}\n"
+        output_text += f"\nNumber of items: {len(updated_receipt.positions)}\n\n"
+        output_text += f"💡 To make more changes, just type what else you'd like to adjust"
+
+        # Create approval buttons again
+        keyboard = [[
+            InlineKeyboardButton("✅ Approve", callback_data="approve"),
+            InlineKeyboardButton("❌ Reject", callback_data="reject")
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(output_text, reply_markup=reply_markup)
+        return AWAITING_APPROVAL
+        
+    except Exception as e:
+        logger.error(f"Failed to process user comment for user {user_id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Failed to process your changes: {e}")
+        return ConversationHandler.END
 
 
 async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,7 +565,10 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
         states={
-            AWAITING_APPROVAL: [CallbackQueryHandler(handle_approval)]
+            AWAITING_APPROVAL: [
+                CallbackQueryHandler(handle_approval),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_comment)
+            ]
         },
         fallbacks=[]
     )
