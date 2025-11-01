@@ -36,6 +36,16 @@ HELP_TEXT = (
     "- Send /flush to backup database to cloud"
 )
 
+def get_persistent_keyboard():
+    """Create persistent buttons that are always available."""
+    keyboard = [
+        [
+            InlineKeyboardButton("💾 Flush Database", callback_data="persistent_flush"),
+            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 async def check_user_access(update: Update) -> bool:
     """Check if the user is allowed to use the bot."""
     user_id = update.effective_user.id
@@ -55,7 +65,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = User(user_id=user.id, name=user.full_name)
     get_or_create_user(db_user)
     welcome_text = f'Hello {user.full_name}! I am your Expenses bot.\n\n{HELP_TEXT}'
-    await update.message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text, reply_markup=get_persistent_keyboard())
 
 
 async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,19 +82,19 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError("Number must be positive")
     except (IndexError, ValueError):
         logger.warning(f"Invalid list command argument from user {user.id}")
-        await update.message.reply_text("Please specify a positive number: /list N")
+        await update.message.reply_text("Please specify a positive number: /list N", reply_markup=get_persistent_keyboard())
         return
 
     receipts = get_last_n_receipts(update.effective_user.id, n)
     if not receipts:
-        await update.message.reply_text("No receipts found.")
+        await update.message.reply_text("No receipts found.", reply_markup=get_persistent_keyboard())
         return
 
     text = "Last receipts:\n\n"
     for r in receipts:
         text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}\n"
     
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
 
 async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -98,16 +108,16 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info(f"Attempting to delete receipt {receipt_id} for user {user.id}")
     except (IndexError, ValueError):
         logger.warning(f"Invalid delete command argument from user {user.id}")
-        await update.message.reply_text("Please specify a receipt ID: /delete ID")
+        await update.message.reply_text("Please specify a receipt ID: /delete ID", reply_markup=get_persistent_keyboard())
         return
 
     try:
         if delete_receipt(receipt_id, update.effective_user.id):
-            await update.message.reply_text(f"Receipt {receipt_id} deleted successfully!")
+            await update.message.reply_text(f"Receipt {receipt_id} deleted successfully!", reply_markup=get_persistent_keyboard())
         else:
-            await update.message.reply_text(f"Receipt {receipt_id} not found or not owned by you.")
+            await update.message.reply_text(f"Receipt {receipt_id} not found or not owned by you.", reply_markup=get_persistent_keyboard())
     except Exception as e:
-        await update.message.reply_text(f"Failed to delete receipt: {e}")
+        await update.message.reply_text(f"Failed to delete receipt: {e}", reply_markup=get_persistent_keyboard())
 
 async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -123,12 +133,12 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError("Number must be positive")
     except (IndexError, ValueError):
         logger.warning(f"Invalid summary command argument from user {user.id}")
-        await update.message.reply_text("Please specify a positive number: /summary N")
+        await update.message.reply_text("Please specify a positive number: /summary N", reply_markup=get_persistent_keyboard())
         return
 
     summary = get_monthly_summary(update.effective_user.id, n)
     if not summary:
-        await update.message.reply_text("No data found for the specified period.")
+        await update.message.reply_text("No data found for the specified period.", reply_markup=get_persistent_keyboard())
         return
 
     text = "Monthly summary:\n\n"
@@ -137,7 +147,7 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{month_data['count']} receipts, "
                 f"total: {month_data['total']:.2f}\n")
     
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
 
 
 async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,14 +166,14 @@ async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if success:
             logger.info(f"Database successfully uploaded to GCS by user {user.id}")
-            await update.message.reply_text("✅ Database successfully uploaded to Google Cloud Storage!")
+            await update.message.reply_text("✅ Database successfully uploaded to Google Cloud Storage!", reply_markup=get_persistent_keyboard())
         else:
             logger.warning(f"Database upload failed or no changes detected for user {user.id}")
-            await update.message.reply_text("⚠️ Database upload failed or no changes were detected.")
+            await update.message.reply_text("⚠️ Database upload failed or no changes were detected.", reply_markup=get_persistent_keyboard())
             
     except Exception as e:
         logger.error(f"Error during database flush for user {user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to upload database: {str(e)}")
+        await update.message.reply_text(f"❌ Failed to upload database: {str(e)}", reply_markup=get_persistent_keyboard())
 
 
 # States for conversation handler
@@ -261,19 +271,80 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             receipt_id = add_receipt(receipt)
             logger.info(f"Receipt saved successfully with ID: {receipt_id}")
             
-            await query.edit_message_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}")
+            await query.edit_message_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
         except Exception as e:
             logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"Failed to save receipt: {e}")
+            await query.edit_message_text(f"Failed to save receipt: {e}", reply_markup=get_persistent_keyboard())
     else:  # reject
         logger.info(f"Receipt rejected by user {user_id}")
-        await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.")
+        await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.", reply_markup=get_persistent_keyboard())
     
     # Clean up stored data
     if user_id in receipt_data:
         del receipt_data[user_id]
     
     return ConversationHandler.END
+
+
+async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle clicks on persistent buttons."""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    user_id = user.id
+    
+    # Check user access for callback queries
+    if user_id not in ALLOWED_USERS:
+        logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user_id})")
+        await query.edit_message_text("Sorry, you are not authorized to use this bot.")
+        return
+    
+    if query.data == "persistent_flush":
+        logger.info(f"Persistent flush button clicked by user {user.full_name} (ID: {user_id})")
+        
+        try:
+            await query.edit_message_text("Uploading database to cloud storage...")
+            logger.info(f"Starting database upload for user {user_id}")
+            
+            # Force upload the database to Google Cloud Storage
+            success = cloud_storage.check_and_upload_db()
+            
+            if success:
+                logger.info(f"Database successfully uploaded to GCS by user {user_id}")
+                await query.edit_message_text("✅ Database successfully uploaded to Google Cloud Storage!", reply_markup=get_persistent_keyboard())
+            else:
+                logger.warning(f"Database upload failed or no changes detected for user {user_id}")
+                await query.edit_message_text("⚠️ Database upload failed or no changes were detected.", reply_markup=get_persistent_keyboard())
+                
+        except Exception as e:
+            logger.error(f"Error during database flush for user {user_id}: {str(e)}", exc_info=True)
+            await query.edit_message_text(f"❌ Failed to upload database: {str(e)}", reply_markup=get_persistent_keyboard())
+    
+    elif query.data == "persistent_summary":
+        logger.info(f"Persistent summary button clicked by user {user.full_name} (ID: {user_id})")
+        
+        try:
+            # Default to last 3 months for button click
+            n = 3
+            logger.info(f"Generating {n} month summary for user {user_id}")
+            
+            summary = get_monthly_summary(user_id, n)
+            if not summary:
+                await query.edit_message_text("No data found for the last 3 months.", reply_markup=get_persistent_keyboard())
+                return
+
+            text = "Monthly summary (last 3 months):\n\n"
+            for month_data in summary:
+                text += (f"{month_data['month']}: "
+                        f"{month_data['count']} receipts, "
+                        f"total: {month_data['total']:.2f}\n")
+            
+            await query.edit_message_text(text, reply_markup=get_persistent_keyboard())
+            
+        except Exception as e:
+            logger.error(f"Error during summary generation for user {user_id}: {str(e)}", exc_info=True)
+            await query.edit_message_text(f"❌ Failed to generate summary: {str(e)}", reply_markup=get_persistent_keyboard())
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,7 +356,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     reminder_text = f"👋 To add an expense, please send me a photo of your receipt.\n\n{HELP_TEXT}"
-    await update.message.reply_text(reminder_text)
+    await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     """Background task to check and upload database changes."""
@@ -315,6 +386,9 @@ def main():
     app.add_handler(CommandHandler('summary', show_summary))
     app.add_handler(CommandHandler('flush', flush_database))
     app.add_handler(conv_handler)
+    
+    # Handler for persistent buttons
+    app.add_handler(CallbackQueryHandler(handle_persistent_buttons, pattern="^persistent_"))
     
     # Handler for text messages (not commands)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
