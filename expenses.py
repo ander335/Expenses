@@ -197,6 +197,33 @@ import time
 # Import the new update function
 from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt
 
+async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFAULT_TYPE, *, voice_file_path: str, heard_prefix: str, next_hint: str) -> str:
+    """Shared helper: transcribe a voice file and immediately inform the user.
+
+    Args:
+        update: Telegram update
+        context: Telegram context
+        voice_file_path: Local path to the downloaded .ogg voice file
+        heard_prefix: Prefix for the immediate feedback line (e.g., "🎙️ I heard:" or "🎙️ Your voice comment:")
+        next_hint: Follow-up hint displayed on a new line to set expectations (e.g., "🛠️ Creating a receipt summary...")
+
+    Returns:
+        The transcribed text
+    """
+    logger.info(f"Starting transcription for file: {voice_file_path}")
+    transcribed_text = convert_voice_to_text(voice_file_path)
+    logger.info(f"Transcription result: {transcribed_text}")
+
+    # Inform user immediately; failure here shouldn't break the flow
+    immediate_message = f"{heard_prefix} \"{transcribed_text}\"\n\n{next_hint}" if next_hint else f"{heard_prefix} \"{transcribed_text}\""
+    try:
+        await update.message.reply_text(immediate_message)
+        logger.info("Sent immediate transcription feedback to user")
+    except Exception as e:
+        logger.warning(f"Failed to send immediate transcription message: {str(e)}")
+
+    return transcribed_text
+
 async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None):
     """Send a preview of the parsed receipt with Approve/Reject buttons and store temp data."""
     user_id = update.effective_user.id
@@ -433,10 +460,14 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("🎙️ Processing your voice receipt...")
 
     try:
-        # Convert voice to text using Gemini
-        logger.info("Converting voice message to text")
-        transcribed_text = convert_voice_to_text(voice_file_path)
-        logger.info(f"Voice transcription successful: {transcribed_text}")
+        # Transcribe and notify user immediately
+        transcribed_text = await transcribe_voice_and_notify(
+            update,
+            context,
+            voice_file_path=voice_file_path,
+            heard_prefix="🎙️ I heard:",
+            next_hint="🛠️ Creating a receipt summary..."
+        )
         
         # Convert transcribed text to receipt structure using Gemini
         logger.info("Converting transcribed text to receipt structure")
@@ -495,10 +526,14 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("🎙️ Processing your voice message...")
     
     try:
-        # Convert voice to text using Gemini
-        logger.info("Converting voice message to text")
-        user_comment = convert_voice_to_text(voice_file_path)
-        logger.info(f"Voice transcription successful: {user_comment}")
+        # Transcribe and notify user immediately
+        user_comment = await transcribe_voice_and_notify(
+            update,
+            context,
+            voice_file_path=voice_file_path,
+            heard_prefix="🎙️ Your voice comment:",
+            next_hint="🛠️ Applying your changes to the receipt..."
+        )
         
         # Remove buttons from the previous message if it exists
         old_message_id = user_data.get("latest_message_id")
