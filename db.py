@@ -104,10 +104,7 @@ def add_receipt(receipt: Receipt) -> int:
         # This will cascade and save the positions as well
         session.commit()
         receipt_id = receipt.receipt_id
-        
-        # Check if we should upload to cloud storage
-        if cloud_storage.should_upload():
-            cloud_storage.check_and_upload_db()
+        logger.info(f"Receipt {receipt_id} added successfully")
             
     except Exception as e:
         session.rollback()
@@ -140,10 +137,7 @@ def delete_receipt(receipt_id: int, user_id: int) -> bool:
             return False
         session.delete(receipt)
         session.commit()
-        
-        # Check if we should upload to cloud storage
-        if cloud_storage.should_upload():
-            cloud_storage.check_and_upload_db()
+        logger.info(f"Receipt {receipt_id} deleted successfully")
             
         return True
     except Exception:

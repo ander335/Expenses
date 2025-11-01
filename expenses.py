@@ -10,6 +10,8 @@ import json
 from logger_config import logger
 import asyncio
 import requests
+import signal
+import sys
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
@@ -684,9 +686,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     """Background task to check and upload database changes."""
     try:
-        if cloud_storage.should_upload():
-            cloud_storage.check_and_upload_db()
-            logger.info("Backup task completed successfully")
+        cloud_storage.check_and_upload_db()
+        logger.info("Backup task completed successfully")
     except Exception as e:
         logger.error(f"Error in backup task: {str(e)}")
 
@@ -783,8 +784,34 @@ def get_cloud_run_service_url():
 # Global application instance
 application = None
 
+def graceful_shutdown_handler(signum, frame):
+    """Handle graceful shutdown by uploading database before exit."""
+    logger.info(f"Received signal {signum}. Starting graceful shutdown...")
+    
+    try:
+        logger.info("Performing final database upload before shutdown...")
+        success = cloud_storage.check_and_upload_db()
+        if success:
+            logger.info("Final database upload completed successfully")
+        else:
+            logger.warning("Final database upload had no changes or failed")
+    except Exception as e:
+        logger.error(f"Error during final database upload: {e}")
+    
+    logger.info("Graceful shutdown complete. Exiting...")
+    sys.exit(0)
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown."""
+    signal.signal(signal.SIGTERM, graceful_shutdown_handler)  # Cloud Run sends SIGTERM
+    signal.signal(signal.SIGINT, graceful_shutdown_handler)   # Ctrl+C
+    logger.info("Signal handlers configured for graceful shutdown")
+
 def main():
     global application
+    
+    # Setup signal handlers for graceful shutdown
+    setup_signal_handlers()
     
     if USE_WEBHOOK:
         logger.info("Starting Expenses Bot in webhook mode for Cloud Run Service...")
@@ -824,8 +851,8 @@ def main():
     # Handler for text messages (not commands)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    # Add the backup task to the application
-    application.job_queue.run_repeating(backup_task, interval=3600)  # Run every hour
+    # Add the backup task to the application - run every 10 minutes
+    application.job_queue.run_repeating(backup_task, interval=600)  # Run every 10 minutes (600 seconds)
     
     if USE_WEBHOOK:
         # Auto-detect the service URL
