@@ -190,7 +190,7 @@ receipt_data = {}
 import time
 
 # Import the new update function
-from gemini import parse_receipt_image, update_receipt_with_comment
+from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -250,7 +250,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
         output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
         output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
-        output_text += f"💡 To make changes, just type what you'd like to adjust (e.g., 'change date to 25-10-2024', 'convert to USD')"
+        output_text += f"💡 To make changes, just type what you'd like to adjust or send a voice message (e.g., 'change date to 25-10-2024', 'convert to USD')"
 
         # Create approval buttons with timestamp
         keyboard = [[
@@ -421,6 +421,105 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Failed to process user comment for user {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Failed to process your changes: {e}")
         return ConversationHandler.END
+
+
+async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle user voice messages for receipt adjustments."""
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    logger.info(f"Received voice message from {user.full_name} (ID: {user_id})")
+    
+    user_data = receipt_data.get(user_id)
+    if not user_data:
+        await update.message.reply_text("Sorry, I couldn't find your receipt data. Please start over by sending a new receipt photo.")
+        return ConversationHandler.END
+    
+    # Get the voice message
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+    voice_file_path = f"voice_{voice.file_id}.ogg"
+    
+    logger.info(f"Downloading voice message (file_id: {voice.file_id})")
+    await file.download_to_drive(voice_file_path)
+    logger.info(f"Voice message downloaded to {voice_file_path}")
+
+    await update.message.reply_text("🎙️ Processing your voice message...")
+    
+    try:
+        # Convert voice to text using Gemini
+        logger.info("Converting voice message to text")
+        user_comment = convert_voice_to_text(voice_file_path)
+        logger.info(f"Voice transcription successful: {user_comment}")
+        
+        # Remove buttons from the previous message if it exists
+        old_message_id = user_data.get("latest_message_id")
+        if old_message_id:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=user_id,
+                    message_id=old_message_id,
+                    reply_markup=None
+                )
+                logger.info(f"Removed buttons from previous message {old_message_id} for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Could not remove buttons from previous message {old_message_id}: {str(e)}")
+        
+        # Get the original JSON and send update request to Gemini
+        original_json = user_data["original_json"]
+        logger.info(f"Sending update request to Gemini with transcribed comment: {user_comment}")
+        updated_json = update_receipt_with_comment(original_json, user_comment)
+        logger.info("Successfully received updated JSON from Gemini")
+        
+        # Parse the updated receipt data
+        updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
+        logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
+        
+        # Update stored data with new parsing result and new timestamp
+        timestamp = str(int(time.time()))
+        receipt_data[user_id] = {
+            "parsed_receipt": updated_receipt,
+            "original_json": updated_json,  # Update the JSON for further iterations
+            "user_comment": user_comment,
+            "latest_timestamp": timestamp,
+            "latest_message_id": None  # Will be set after sending the message
+        }
+        
+        # Format the updated output for display
+        output_text = f"Here's the updated receipt parsing:\n\n"
+        output_text += f"🎙️ Your voice message: \"{user_comment}\"\n\n"
+        if updated_receipt.description:
+            output_text += f"💬 Analysis: {updated_receipt.description}\n\n"
+        output_text += f"Merchant: {updated_receipt.merchant}\n"
+        output_text += f"Category: {updated_receipt.category}\n"
+        output_text += f"Total Amount: {updated_receipt.total_amount}\n"
+        output_text += f"Date: {updated_receipt.date or 'Unknown'}\n"
+        output_text += f"\nNumber of items: {len(updated_receipt.positions)}\n\n"
+        output_text += f"💡 To make more changes, type text or send another voice message"
+
+        # Create approval buttons with new timestamp
+        keyboard = [[
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Send the new message and store its ID
+        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
+        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
+        logger.info(f"Stored new message ID {sent_message.message_id} for user {user_id}")
+        
+        return AWAITING_APPROVAL
+        
+    except Exception as e:
+        logger.error(f"Failed to process voice comment for user {user_id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Failed to process your voice message: {e}")
+        return ConversationHandler.END
+    finally:
+        # Clean up the voice file
+        if os.path.exists(voice_file_path):
+            os.remove(voice_file_path)
+            logger.info(f"Cleaned up voice file: {voice_file_path}")
 
 
 async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -615,7 +714,8 @@ def main():
         states={
             AWAITING_APPROVAL: [
                 CallbackQueryHandler(handle_approval, pattern="^(approve|reject)_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_comment)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_comment),
+                MessageHandler(filters.VOICE, handle_voice_comment)
             ]
         },
         fallbacks=[]

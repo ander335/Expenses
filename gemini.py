@@ -72,6 +72,63 @@ def parse_gemini_json_response(result, operation_type="parsing"):
     
     return cleaned_data
 
+
+def convert_voice_to_text(voice_file_path):
+    """
+    Converts a voice message file to text using Gemini API.
+    
+    Args:
+        voice_file_path: Path to the voice message file (OGG format from Telegram)
+    
+    Returns:
+        str: Transcribed text from the voice message
+    """
+    logger.info(f"Converting voice message to text from {voice_file_path}")
+    
+    # Read voice file and encode as base64
+    with open(voice_file_path, "rb") as voice_file:
+        voice_bytes = voice_file.read()
+        voice_b64 = base64.b64encode(voice_bytes).decode("utf-8")
+    logger.debug("Voice file successfully encoded to base64")
+
+    # Prepare the prompt for voice transcription
+    prompt = "Please transcribe this voice message into text. Most likely it's either English or Russian language. Return only the transcribed text without any additional formatting or explanation."
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"inline_data": {"mime_type": "audio/ogg", "data": voice_b64}},
+                    {"text": prompt}
+                ]
+            }
+        ]
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    logger.info("Sending voice transcription request to Gemini API")
+    try:
+        response = make_secure_request(
+            GEMINI_API_URL,
+            GEMINI_API_KEY,
+            headers=headers,
+            json=payload
+        )
+        logger.info("Successfully received voice transcription response from Gemini API")
+        
+        result = response.json()
+        transcribed_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        logger.info(f"Voice transcription successful: {transcribed_text[:100]}...")
+        
+        return transcribed_text
+        
+    except requests.RequestException as e:
+        error_message = f"Error calling Gemini API for voice transcription: {str(e)}"
+        logger.error(redact_sensitive_data(error_message))
+        raise
+
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"  # Supported Gemini image endpoint
 
 # Common part of the prompt that describes what user can change
