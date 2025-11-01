@@ -54,7 +54,7 @@ class Position(Base):
     receipt: Mapped["Receipt"] = relationship("Receipt", back_populates="positions")
 
 from sqlalchemy.engine import Engine
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
@@ -67,8 +67,41 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 engine = create_engine(DB_PATH)
 Session = sessionmaker(bind=engine)
 
-# Create tables if they don't exist
+def migrate_database():
+    """Handle database schema migrations."""
+    logger.info("Checking for database migrations...")
+    
+    # Check if receipts table exists and has description column
+    try:
+        insp = inspect(engine)
+
+        # If table does not exist yet, create_all() below will handle it
+        table_names = insp.get_table_names()
+        if 'receipts' not in table_names:
+            logger.info("Receipts table doesn't exist yet, will be created by create_all()")
+            return
+
+        columns = [col['name'] for col in insp.get_columns('receipts')]
+
+        if 'description' not in columns:
+            logger.info("Adding 'description' column to receipts table...")
+            # Use driver-level SQL execution for DDL in SQLAlchemy 2.0
+            with engine.begin() as conn:
+                conn.exec_driver_sql("ALTER TABLE receipts ADD COLUMN description TEXT")
+            logger.info("Successfully added 'description' column to receipts table")
+        else:
+            logger.info("Database schema is up to date - 'description' column already exists")
+
+    except Exception as e:
+        logger.error(f"Error during database migration: {e}")
+        # Don't raise the exception, let the application continue
+        # The create_all will handle basic table creation if needed
+
+# Create tables if they don't exist (this must run first)
 Base.metadata.create_all(engine)
+
+# Run database migrations after table creation
+migrate_database()
 
 def get_or_create_user(user: User) -> User:
     session = Session()
