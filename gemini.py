@@ -73,6 +73,7 @@ VOICE_TO_RECEIPT_PROMPT = """Based on the text provided by the user describing t
 - If the merchant name is not specified, use Unknown as the merchant name
 - Choose the most appropriate category from the available list
 - Set quantity to 1 if not specified
+- If the user provides any non-related information to the receipt (context, stories, additional comments), summarize it and put it in the receipt description field. Write the description in a direct, subjectless style without referring to "the user" (e.g., "Not very tasty, caused digestive issues" instead of "The user commented it was not very tasty")
 
 Return ONLY a JSON object with this structure:
 {receipt_structure}
