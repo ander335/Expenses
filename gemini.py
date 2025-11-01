@@ -7,8 +7,81 @@ Handles integration with Gemini for receipt parsing.
 import requests
 import base64
 import json
+from datetime import datetime
 from auth_data import GEMINI_API_KEY
 from logger_config import logger, redact_sensitive_data
+
+# =============================================================================
+# GEMINI API CONFIGURATION
+# =============================================================================
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+# =============================================================================
+# RECEIPT JSON STRUCTURE
+# =============================================================================
+RECEIPT_JSON_STRUCTURE = """{
+    "text": "full text content of the receipt, exactly as written",
+    "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
+    "category": "closest matching category from this list: [food, alcohol, transport, clothes, vacation, healthcare, beauty, household, car, cat, other]",
+    "merchant": "name of the store or merchant",
+    "positions": [
+        {
+            "description": "item description",
+            "quantity": "item quantity as a number or weight",
+            "category": "item category from this list: [food, alcohol, clothes, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
+            "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
+        }
+    ],
+    "total_amount": "total amount as a number",
+    "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. The date migth appear in different formats, convert it to DD-MM-YYYY"
+}"""
+
+# =============================================================================
+# PROMPT TEMPLATES
+# =============================================================================
+USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: If the user provides additional comments below (inserted as {user_comment}), use those comments to override or adjust specific extracted fields when they conflict with the image. The user comments should take precedence for any conflicting information. Special instructions:
+- DATA OVERRIDE: Use user comments to correct dates, merchant names, amounts, categories, or any other field they explicitly mention.
+- CURRENCY CONVERSION: If the user requests currency conversion (e.g., "convert to USD", "convert euros to CZK", "use exchange rate from purchase date"), perform the conversion and return the converted amounts in the JSON. Apply the conversion to both individual item prices and the total_amount. Use realistic exchange rates for the date specified (or current rates if no date specified).
+- PRESERVE ORIGINAL: If currency conversion is requested, you may add a comment in the "text" field noting the original currency and amounts for reference.
+
+User comments: "{user_comment}"""
+
+RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Return ONLY a JSON object with these properties:
+{receipt_structure}
+
+{user_adjustment_instructions}"""
+
+UPDATE_RECEIPT_PROMPT = """You previously parsed a receipt and generated this JSON:
+
+{original_json}
+
+The user has provided additional comments or corrections: "{user_comment}"
+
+Please update the JSON data based on the user's comments. Return ONLY the updated JSON object with the same structure as before. Make sure to:
+1. Apply the user's corrections to the appropriate fields
+2. Maintain the same JSON structure
+3. Update the "description" field to mention what was changed based on user comments
+4. If currency conversion is requested, convert all amounts appropriately
+
+{user_adjustment_instructions}"""
+
+VOICE_TO_RECEIPT_PROMPT = """Based on the text provided by the user describing their purchase, create a receipt structure. Follow these instructions:
+
+- If the user does not mention individual positions in the purchase, create ONE position with the total amount as the price
+- If the date wasn't mentioned, use the current date: {current_date} (in DD-MM-YYYY format)
+- If any required field is missing, make reasonable assumptions based on the context
+- If the merchant name is not specified, use Unknown as the merchant name
+- Choose the most appropriate category from the available list
+- Set quantity to 1 if not specified
+
+Return ONLY a JSON object with this structure:
+{receipt_structure}
+
+User's purchase description: "{user_text}" """
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 
 def make_secure_request(url, api_key, **kwargs):
     """
@@ -129,49 +202,63 @@ def convert_voice_to_text(voice_file_path):
         logger.error(redact_sensitive_data(error_message))
         raise
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"  # Supported Gemini image endpoint
 
-# Common part of the prompt that describes what user can change
-USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: If the user provides additional comments below (inserted as {user_comment}), use those comments to override or adjust specific extracted fields when they conflict with the image. The user comments should take precedence for any conflicting information. Special instructions:
-- DATA OVERRIDE: Use user comments to correct dates, merchant names, amounts, categories, or any other field they explicitly mention.
-- CURRENCY CONVERSION: If the user requests currency conversion (e.g., "convert to USD", "convert euros to CZK", "use exchange rate from purchase date"), perform the conversion and return the converted amounts in the JSON. Apply the conversion to both individual item prices and the total_amount. Use realistic exchange rates for the date specified (or current rates if no date specified).
-- PRESERVE ORIGINAL: If currency conversion is requested, you may add a comment in the "text" field noting the original currency and amounts for reference.
+def parse_voice_to_receipt(transcribed_text):
+    """
+    Converts transcribed voice text to a receipt structure using Gemini API.
+    
+    Args:
+        transcribed_text: The text transcribed from voice message
+    
+    Returns:
+        str: JSON string with receipt structure
+    """
+    logger.info(f"Converting voice text to receipt structure: {transcribed_text[:100]}...")
+    
+    logger.info("Processing voice text to create receipt structure")
 
-User comments: "{user_comment}"""
+    # Get current date in DD-MM-YYYY format
+    current_date = datetime.now().strftime("%d-%m-%Y")
+    logger.debug(f"Using current date: {current_date}")
 
-RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Return ONLY a JSON object with these properties:
-{{
-    "text": "full text content of the receipt, exactly as written",
-    "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
-    "category": "closest matching category from this list: [food, alcohol, transport, clothes, vacation, healthcare, beauty, household, car, cat, other]",
-    "merchant": "name of the store or merchant",
-    "positions": [
-        {{
-            "description": "item description",
-            "quantity": "item quantity as a number or weight",
-            "category": "item category from this list: [food, alcohol, clothes, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
-            "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
-        }}
-    ],
-    "total_amount": "total amount as a number",
-    "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. The date migth appear in different formats, convert it to DD-MM-YYYY"
-}}
+    # Use the voice-to-receipt prompt
+    prompt = VOICE_TO_RECEIPT_PROMPT.format(
+        receipt_structure=RECEIPT_JSON_STRUCTURE,
+        user_text=transcribed_text,
+        current_date=current_date
+    )
+    
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ]
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
 
-{user_adjustment_instructions}"""
+    logger.info("Sending voice-to-receipt request to Gemini API")
+    try:
+        response = make_secure_request(
+            GEMINI_API_URL,
+            GEMINI_API_KEY,
+            headers=headers,
+            json=payload
+        )
+        logger.info("Successfully received voice-to-receipt response from Gemini API")
+        
+        result = response.json()
+        return parse_gemini_json_response(result, "voice-to-receipt parsing")
+        
+    except requests.RequestException as e:
+        error_message = f"Error calling Gemini API for voice-to-receipt: {str(e)}"
+        logger.error(redact_sensitive_data(error_message))
+        raise
 
-UPDATE_RECEIPT_PROMPT = """You previously parsed a receipt and generated this JSON:
-
-{original_json}
-
-The user has provided additional comments or corrections: "{user_comment}"
-
-Please update the JSON data based on the user's comments. Return ONLY the updated JSON object with the same structure as before. Make sure to:
-1. Apply the user's corrections to the appropriate fields
-2. Maintain the same JSON structure
-3. Update the "description" field to mention what was changed based on user comments
-4. If currency conversion is requested, convert all amounts appropriately
-
-{user_adjustment_instructions}"""
 
 def parse_receipt_image(image_path, user_comment=None):
     """
@@ -188,6 +275,7 @@ def parse_receipt_image(image_path, user_comment=None):
 
     # Always use the single prompt; insert the (possibly empty) user comment
     prompt = RECEIPT_PARSE_PROMPT.format(
+        receipt_structure=RECEIPT_JSON_STRUCTURE,
         user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment_text)
     )
     

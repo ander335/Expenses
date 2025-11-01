@@ -27,7 +27,8 @@ ALLOWED_USERS = [
 HELP_TEXT = (
     "Available commands:\n"
     "• Send me a photo of your shop receipt to add it\n"
-    "• Add a caption to your photo to override/correct any details\n"
+    "• Send me a voice message describing your purchase to add it\n"
+    "• Add a caption to your photo/voice to override/correct any details\n"
     "• /list N - show last N expenses\n"
     "• /delete ID - delete receipt with ID\n"
     "• /summary N - show expenses summary for last N months\n"
@@ -36,6 +37,7 @@ HELP_TEXT = (
     "- Send /list 5 to see last 5 receipts\n"
     "- Send /summary 3 to see expenses for last 3 months\n"
     "- Send a photo with caption \"Date: 25-10-2024, Total: 15.50\" to correct details\n"
+    "- Send a voice message saying \"I bought groceries for 25 euros at Tesco yesterday\"\n"
     "- Send a photo with caption \"Convert euros to CZK using exchange rate from purchase date\"\n"
     "- Send a photo with caption \"Convert to USD\" for currency conversion\n"
     "- Send /flush to backup database to cloud"
@@ -190,7 +192,7 @@ receipt_data = {}
 import time
 
 # Import the new update function
-from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text
+from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -423,6 +425,91 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
 
+async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice messages as receipt sources (not just comments)."""
+    user = update.effective_user
+    logger.info(f"Received voice receipt from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update):
+        return ConversationHandler.END
+    
+    # Get the voice message
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+    voice_file_path = f"receipt_voice_{voice.file_id}.ogg"
+    
+    logger.info(f"Downloading voice receipt (file_id: {voice.file_id})")
+    await file.download_to_drive(voice_file_path)
+    logger.info(f"Voice receipt downloaded to {voice_file_path}")
+
+    await update.message.reply_text("🎙️ Processing your voice receipt...")
+
+    try:
+        # Convert voice to text using Gemini
+        logger.info("Converting voice message to text")
+        transcribed_text = convert_voice_to_text(voice_file_path)
+        logger.info(f"Voice transcription successful: {transcribed_text}")
+        
+        # Convert transcribed text to receipt structure using Gemini
+        logger.info("Converting transcribed text to receipt structure")
+        gemini_output = parse_voice_to_receipt(transcribed_text)
+        logger.info("Successfully received receipt structure from Gemini")
+        
+        # Parse the receipt data into object
+        user_id = update.effective_user.id
+        logger.info(f"Parsing Gemini output for user {user_id}")
+        parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
+        logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
+        
+        # Store the parsed receipt object and original JSON
+        timestamp = str(int(time.time()))
+        receipt_data[user_id] = {
+            "parsed_receipt": parsed_receipt,
+            "original_json": gemini_output,  # Store the original JSON response
+            "user_comment": None,
+            "latest_timestamp": timestamp,
+            "latest_message_id": None  # Will be set after sending the message
+        }
+        logger.info(f"Temporary receipt data stored for user {user_id} with timestamp {timestamp}")
+        
+        # Format the output for display
+        output_text = f"Here's what I understood from your voice message:\n\n"
+        output_text += f"🎙️ Your message: \"{transcribed_text}\"\n\n"
+        if parsed_receipt.description:
+            output_text += f"💬 Analysis: {parsed_receipt.description}\n\n"
+        output_text += f"Merchant: {parsed_receipt.merchant}\n"
+        output_text += f"Category: {parsed_receipt.category}\n"
+        output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
+        output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
+        output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
+        output_text += f"💡 To make changes, just type what you'd like to adjust or send another voice message"
+
+        # Create approval buttons with timestamp
+        keyboard = [[
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Send the message and store its ID
+        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
+        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
+        logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
+        
+        return AWAITING_APPROVAL
+        
+    except Exception as e:
+        logger.error(f"Failed to process voice receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Failed to process voice receipt: {e}")
+    finally:
+        # Clean up the voice file
+        if os.path.exists(voice_file_path):
+            os.remove(voice_file_path)
+            logger.info(f"Cleaned up voice file: {voice_file_path}")
+        
+    return ConversationHandler.END
+
+
 async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle user voice messages for receipt adjustments."""
     user_id = update.effective_user.id
@@ -591,7 +678,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update):
         return
     
-    reminder_text = f"👋 To add an expense, please send me a photo of your receipt.\n\n💡 Tip: Add a caption to your photo to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
+    reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
     await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
@@ -710,7 +797,10 @@ def main():
     
     # Create conversation handler for photo processing
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
+        entry_points=[
+            MessageHandler(filters.PHOTO, handle_photo),
+            MessageHandler(filters.VOICE, handle_voice_receipt)
+        ],
         states={
             AWAITING_APPROVAL: [
                 CallbackQueryHandler(handle_approval, pattern="^(approve|reject)_"),
