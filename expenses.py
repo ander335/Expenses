@@ -187,6 +187,8 @@ AWAITING_APPROVAL = 1
 # Store temporary data
 receipt_data = {}
 
+import time
+
 # Import the new update function
 from gemini import parse_receipt_image, update_receipt_with_comment
 
@@ -227,12 +229,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
         
         # Store the parsed receipt object and original JSON
+        timestamp = str(int(time.time()))
         receipt_data[user_id] = {
             "parsed_receipt": parsed_receipt,
             "original_json": gemini_output,  # Store the original JSON response
-            "user_comment": user_comment
+            "user_comment": user_comment,
+            "latest_timestamp": timestamp,
+            "latest_message_id": None  # Will be set after sending the message
         }
-        logger.info(f"Temporary receipt data stored for user {user_id}")
+        logger.info(f"Temporary receipt data stored for user {user_id} with timestamp {timestamp}")
         
         # Format the output for display
         output_text = f"Here's what I found in your receipt:\n\n"
@@ -247,14 +252,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
         output_text += f"💡 To make changes, just type what you'd like to adjust (e.g., 'change date to 25-10-2024', 'convert to USD')"
 
-        # Create approval buttons
+        # Create approval buttons with timestamp
         keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data="approve"),
-            InlineKeyboardButton("❌ Reject", callback_data="reject")
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(output_text, reply_markup=reply_markup)
+        # Send the message and store its ID
+        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
+        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
+        logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
         
         return AWAITING_APPROVAL
         
@@ -281,7 +289,21 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Sorry, I couldn't find your receipt data. Please try again.")
         return ConversationHandler.END
     
-    if query.data == "approve":
+    # Extract action and timestamp from callback data
+    callback_parts = query.data.split('_')
+    if len(callback_parts) != 2:
+        await query.edit_message_text("⚠️ This button is no longer active. Please use the buttons from the latest message.")
+        return ConversationHandler.END
+    
+    action, timestamp = callback_parts
+    latest_timestamp = user_data.get("latest_timestamp")
+    
+    # Check if this is the latest message
+    if timestamp != latest_timestamp:
+        await query.edit_message_text("⚠️ This button is no longer active. Please use the buttons from the latest message.")
+        return ConversationHandler.END
+    
+    if action == "approve":
         try:
             # Get or create user
             user = User(user_id=user_id, name=update.effective_user.full_name)
@@ -294,6 +316,7 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             receipt_id = add_receipt(receipt)
             logger.info(f"Receipt saved successfully with ID: {receipt_id}")
             
+            # Remove buttons and show success message
             await query.edit_message_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
         except Exception as e:
             logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
@@ -304,13 +327,18 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del receipt_data[user_id]
         return ConversationHandler.END
     
-    else:  # reject
+    elif action == "reject":
         logger.info(f"Receipt rejected by user {user_id}")
+        # Remove buttons and show rejection message
         await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.", reply_markup=get_persistent_keyboard())
         
         # Clean up stored data
         if user_id in receipt_data:
             del receipt_data[user_id]
+        return ConversationHandler.END
+    
+    else:
+        await query.edit_message_text("⚠️ Unknown action. Please use the buttons from the latest message.")
         return ConversationHandler.END
 
 
@@ -330,6 +358,19 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Processing your changes...")
     
     try:
+        # Remove buttons from the previous message if it exists
+        old_message_id = user_data.get("latest_message_id")
+        if old_message_id:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=user_id,
+                    message_id=old_message_id,
+                    reply_markup=None
+                )
+                logger.info(f"Removed buttons from previous message {old_message_id} for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Could not remove buttons from previous message {old_message_id}: {str(e)}")
+        
         # Get the original JSON and send update request to Gemini
         original_json = user_data["original_json"]
         logger.info(f"Sending update request to Gemini with user comment: {user_comment}")
@@ -340,11 +381,14 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
         logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
         
-        # Update stored data with new parsing result
+        # Update stored data with new parsing result and new timestamp
+        timestamp = str(int(time.time()))
         receipt_data[user_id] = {
             "parsed_receipt": updated_receipt,
             "original_json": updated_json,  # Update the JSON for further iterations
-            "user_comment": user_comment
+            "user_comment": user_comment,
+            "latest_timestamp": timestamp,
+            "latest_message_id": None  # Will be set after sending the message
         }
         
         # Format the updated output for display
@@ -359,14 +403,18 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         output_text += f"\nNumber of items: {len(updated_receipt.positions)}\n\n"
         output_text += f"💡 To make more changes, just type what else you'd like to adjust"
 
-        # Create approval buttons again
+        # Create approval buttons with new timestamp
         keyboard = [[
-            InlineKeyboardButton("✅ Approve", callback_data="approve"),
-            InlineKeyboardButton("❌ Reject", callback_data="reject")
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(output_text, reply_markup=reply_markup)
+        # Send the new message and store its ID
+        sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
+        receipt_data[user_id]["latest_message_id"] = sent_message.message_id
+        logger.info(f"Stored new message ID {sent_message.message_id} for user {user_id}")
+        
         return AWAITING_APPROVAL
         
     except Exception as e:
@@ -566,7 +614,7 @@ def main():
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
         states={
             AWAITING_APPROVAL: [
-                CallbackQueryHandler(handle_approval),
+                CallbackQueryHandler(handle_approval, pattern="^(approve|reject)_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_comment)
             ]
         },
