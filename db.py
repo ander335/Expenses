@@ -38,6 +38,7 @@ class Receipt(Base):
     total_amount: Mapped[float] = mapped_column(Float, nullable=False)
     date: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     text: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Full text content of the receipt
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Brief description from Gemini
     user: Mapped["User"] = relationship("User", back_populates="receipts")
     positions: Mapped[List["Position"]] = relationship("Position", back_populates="receipt", cascade="all, delete-orphan")
 

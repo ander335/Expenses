@@ -27,6 +27,7 @@ ALLOWED_USERS = [
 HELP_TEXT = (
     "Available commands:\n"
     "• Send me a photo of your shop receipt to add it\n"
+    "• Add a caption to your photo to override/correct any details\n"
     "• /list N - show last N expenses\n"
     "• /delete ID - delete receipt with ID\n"
     "• /summary N - show expenses summary for last N months\n"
@@ -34,6 +35,9 @@ HELP_TEXT = (
     "\nExamples:\n"
     "- Send /list 5 to see last 5 receipts\n"
     "- Send /summary 3 to see expenses for last 3 months\n"
+    "- Send a photo with caption \"Date: 25-10-2024, Total: 15.50\" to correct details\n"
+    "- Send a photo with caption \"Convert euros to CZK using exchange rate from purchase date\"\n"
+    "- Send a photo with caption \"Convert to USD\" for currency conversion\n"
     "- Send /flush to backup database to cloud"
 )
 
@@ -194,6 +198,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(photo.file_id)
     file_path = f"receipt_{photo.file_id}.jpg"
     
+    # Get user comment/caption if provided
+    user_comment = update.message.caption if update.message.caption else None
+    if user_comment:
+        logger.info(f"User provided comment with photo: {user_comment}")
+    else:
+        logger.info("No user comment provided with photo")
+    
     logger.info(f"Downloading receipt photo (file_id: {photo.file_id})")
     await file.download_to_drive(file_path)
     logger.info(f"Receipt photo downloaded to {file_path}")
@@ -201,9 +212,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your receipt...")
 
     try:
-        # Parse image with Gemini
+        # Parse image with Gemini, including user comment if provided
         logger.info(f"Sending receipt image to Gemini for analysis")
-        gemini_output = parse_receipt_image(file_path)
+        gemini_output = parse_receipt_image(file_path, user_comment)
         logger.info("Successfully received response from Gemini")
         
         # Parse the receipt data into object
@@ -214,12 +225,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Store the parsed receipt object
         receipt_data[user_id] = {
-            "parsed_receipt": parsed_receipt
+            "parsed_receipt": parsed_receipt,
+            "user_comment": user_comment
         }
         logger.info(f"Temporary receipt data stored for user {user_id}")
         
         # Format the output for display
         output_text = f"Here's what I found in your receipt:\n\n"
+        if user_comment:
+            output_text += f"📝 Your comment: {user_comment}\n\n"
+        if parsed_receipt.description:
+            output_text += f"💬 Analysis: {parsed_receipt.description}\n\n"
         output_text += f"Merchant: {parsed_receipt.merchant}\n"
         output_text += f"Category: {parsed_receipt.category}\n"
         output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
@@ -238,6 +254,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return AWAITING_APPROVAL
         
     except Exception as e:
+        logger.error(f"Failed to process receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Failed to process receipt: {e}")
     finally:
         if os.path.exists(file_path):
@@ -356,7 +373,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update):
         return
     
-    reminder_text = f"👋 To add an expense, please send me a photo of your receipt.\n\n{HELP_TEXT}"
+    reminder_text = f"👋 To add an expense, please send me a photo of your receipt.\n\n💡 Tip: Add a caption to your photo to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
     await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):

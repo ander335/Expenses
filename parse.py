@@ -33,6 +33,7 @@ def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
         category=data.get('category', 'Unknown Category'),
         total_amount=float(data.get('total_amount', 0)),
         text=data.get('text'),
+        description=data.get('description'),
         date=data.get('date'),
         positions=positions,
         user_id=user_id
