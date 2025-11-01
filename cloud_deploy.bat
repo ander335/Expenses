@@ -152,4 +152,4 @@ if /i "%MODE%"=="job" (
 )
 
 echo.
-echo Deployment complete!
+echo Deployment complete at %DATE% %TIME%!
