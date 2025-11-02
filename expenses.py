@@ -795,12 +795,18 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
     user = update.effective_user
     user_id = user.id
     
-    # Check user access for callback queries
-    db_user = get_user(user_id)
-    if not db_user or not db_user.is_authorized:
-        logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user_id})")
-        await query.edit_message_text("Sorry, you are not authorized to use this bot.")
-        return
+    # Use the same authorization logic as other handlers
+    # Check if user is admin first
+    if user_id == get_admin_user_id():
+        # Admin is always authorized
+        pass
+    else:
+        # Check database authorization for non-admin users
+        db_user = get_user(user_id)
+        if not db_user or not db_user.is_authorized:
+            logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user_id})")
+            await query.edit_message_text("Sorry, you are not authorized to use this bot.")
+            return
     
     if query.data == "persistent_flush":
         logger.info(f"Persistent flush button clicked by user {user.full_name} (ID: {user_id})")
