@@ -19,7 +19,7 @@ from db import (
     get_user, create_user_if_missing, set_user_authorized, set_user_approval_requested
 )
 from parse import parse_receipt_from_gemini
-from gemini import parse_receipt_image
+from gemini import parse_receipt_image, AIServiceMalformedJSONError
 from security_utils import (
     SecurityException, RateLimiter, SecureFileHandler, InputValidator, SessionManager,
     rate_limiter, file_handler, session_manager,
@@ -29,6 +29,45 @@ from security_utils import (
 def get_admin_user_id() -> int:
     # TELEGRAM_ADMIN_ID is guaranteed valid by auth_data import
     return TELEGRAM_ADMIN_ID
+
+async def handle_ai_service_error(update: Update, e: Exception, operation_type: str = "receipt") -> None:
+    """
+    Helper function to handle AI service errors with specific messaging for malformed JSON.
+    
+    Args:
+        update: Telegram update object
+        e: The exception that occurred
+        operation_type: Type of operation (receipt, voice, text, changes, voice_changes)
+    """
+    if isinstance(e, AIServiceMalformedJSONError):
+        if operation_type == "receipt":
+            message = "🤖 The AI service returned incorrectly formatted data. Please try uploading your receipt photo one more time - this usually resolves the issue."
+        elif operation_type == "voice":
+            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your voice message one more time - this usually resolves the issue."
+        elif operation_type == "text":
+            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your text description one more time - this usually resolves the issue."
+        elif operation_type == "changes":
+            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your changes one more time - this usually resolves the issue."
+        elif operation_type == "voice_changes":
+            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your voice message one more time - this usually resolves the issue."
+        else:
+            message = "🤖 The AI service returned incorrectly formatted data. Please try again - this usually resolves the issue."
+        
+        await update.message.reply_text(message)
+    else:
+        # Default error messages for other types of errors
+        if operation_type == "receipt":
+            await update.message.reply_text("❌ Failed to process receipt. Please try again with a clearer photo.")
+        elif operation_type == "voice":
+            await update.message.reply_text("❌ Failed to process voice receipt. Please try again or use a photo instead.")
+        elif operation_type == "text":
+            await update.message.reply_text("❌ Failed to process text receipt. Please try again.")
+        elif operation_type == "changes":
+            await update.message.reply_text("❌ Failed to process your changes. Please try again.")
+        elif operation_type == "voice_changes":
+            await update.message.reply_text("❌ Failed to process your voice message. Please try typing your changes instead.")
+        else:
+            await update.message.reply_text("❌ An error occurred. Please try again.")
 
 # Group admin support removed; single admin is used via TELEGRAM_ADMIN_ID.
 
@@ -438,7 +477,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         except Exception as e:
             logger.error(f"Failed to process receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
-            await update.message.reply_text("❌ Failed to process receipt. Please try again with a clearer photo.")
+            await handle_ai_service_error(update, e, "receipt")
         
     except Exception as e:
         logger.error(f"Unexpected error in photo handling: {e}", exc_info=True)
@@ -589,7 +628,7 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     except Exception as e:
         logger.error(f"Failed to process user comment for user {user_id}: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Failed to process your changes. Please try again.")
+        await handle_ai_service_error(update, e, "changes")
         return ConversationHandler.END
 
 
@@ -670,7 +709,7 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             
         except Exception as e:
             logger.error(f"Failed to process voice receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
-            await update.message.reply_text("❌ Failed to process voice receipt. Please try again or use a photo instead.")
+            await handle_ai_service_error(update, e, "voice")
     
     except Exception as e:
         logger.error(f"Unexpected error in voice receipt handling: {e}", exc_info=True)
@@ -775,7 +814,7 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
             
         except Exception as e:
             logger.error(f"Failed to process voice comment for user {user_id}: {str(e)}", exc_info=True)
-            await update.message.reply_text("❌ Failed to process your voice message. Please try typing your changes instead.")
+            await handle_ai_service_error(update, e, "voice_changes")
             return ConversationHandler.END
     
     except Exception as e:
@@ -981,7 +1020,7 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Failed to process /add text receipt for user {user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Failed to process text receipt. Please try again.")
+        await handle_ai_service_error(update, e, "text")
         return ConversationHandler.END
 
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):

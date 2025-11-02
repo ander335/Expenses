@@ -12,6 +12,13 @@ from auth_data import GEMINI_API_KEY
 from logger_config import logger, redact_sensitive_data
 
 # =============================================================================
+# CUSTOM EXCEPTIONS
+# =============================================================================
+class AIServiceMalformedJSONError(Exception):
+    """Raised when the AI service returns malformed JSON that cannot be parsed."""
+    pass
+
+# =============================================================================
 # GEMINI API CONFIGURATION
 # =============================================================================
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
@@ -170,7 +177,8 @@ def parse_gemini_json_response(result, operation_type="parsing"):
         logger.error(f"Invalid JSON returned from Gemini {operation_type}: {str(e)}")
         logger.error(f"Raw Gemini {operation_type} response: {result['candidates'][0]['content']['parts'][0]['text']}")
         logger.error(f"Cleaned {operation_type} response: {cleaned_data}")
-        raise ValueError(f"Gemini returned invalid JSON for {operation_type}: {str(e)}")
+        # Raise custom exception for JSON parsing issues
+        raise AIServiceMalformedJSONError(f"Gemini returned invalid JSON for {operation_type}: {str(e)}")
     
     return cleaned_data
 
