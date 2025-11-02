@@ -29,13 +29,13 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 RECEIPT_JSON_STRUCTURE = """{
     "text": "full text content of the receipt, exactly as written",
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
-    "category": "closest matching category from this list: [food, alcohol, transport, clothes, vacation, healthcare, beauty, household, car, cat, other]",
+    "category": "closest matching category from this list: [food, alcohol, transport, clothes, vacation, sport, healthcare, beauty, household, car, cat, other]",
     "merchant": "name of the store or merchant",
     "positions": [
         {
             "description": "item description",
             "quantity": "item quantity as a number or weight",
-            "category": "item category from this list: [food, alcohol, clothes, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
+            "category": "item category from this list: [food, alcohol, transport, clothes, vacation, sport, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
             "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
         }
     ],
