@@ -8,15 +8,28 @@ from typing import List, Optional
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
-from cloud_storage import CloudStorage
 from logger_config import logger
 
-# Cloud Storage configuration
+# Cloud Storage configuration - initialized lazily to avoid import-time issues
 BUCKET_NAME = "expenses_bot_bucket"  # You'll need to set this to your actual bucket name
-cloud_storage = CloudStorage(BUCKET_NAME)
+_cloud_storage = None
 
-# Download the database file from cloud storage if it exists
-cloud_storage.download_db()
+def get_cloud_storage():
+    """Get cloud storage instance, initializing if needed."""
+    global _cloud_storage
+    if _cloud_storage is None:
+        try:
+            from cloud_storage import CloudStorage
+            _cloud_storage = CloudStorage(BUCKET_NAME)
+            # Download the database file from cloud storage if it exists
+            _cloud_storage.download_db()
+        except Exception as e:
+            logger.warning(f"Cloud storage initialization failed: {e}")
+            _cloud_storage = None
+    return _cloud_storage
+
+# For backward compatibility - create a module-level reference
+cloud_storage = None
 
 DB_PATH = "sqlite:///expenses.db"
 Base = declarative_base()

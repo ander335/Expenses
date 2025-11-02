@@ -12,7 +12,7 @@ import asyncio
 import requests
 import signal
 import sys
-from db import cloud_storage  # Import the cloud storage instance
+from db import get_cloud_storage  # Import the cloud storage getter
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
     delete_receipt, get_monthly_summary,
@@ -274,7 +274,11 @@ async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Starting database upload for user {user.id}")
         
         # Force upload the database to Google Cloud Storage
-        success = cloud_storage.check_and_upload_db()
+        cloud_storage = get_cloud_storage()
+        if cloud_storage:
+            success = cloud_storage.check_and_upload_db()
+        else:
+            success = False
         
         if success:
             logger.info(f"Database successfully uploaded to GCS by user {user.id}")
@@ -816,7 +820,11 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
             logger.info(f"Starting database upload for user {user_id}")
             
             # Force upload the database to Google Cloud Storage
-            success = cloud_storage.check_and_upload_db()
+            cloud_storage = get_cloud_storage()
+            if cloud_storage:
+                success = cloud_storage.check_and_upload_db()
+            else:
+                success = False
             
             if success:
                 logger.info(f"Database successfully uploaded to GCS by user {user_id}")
@@ -987,7 +995,9 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     """Background task to check and upload database changes."""
     try:
-        cloud_storage.check_and_upload_db()
+        cloud_storage = get_cloud_storage()
+        if cloud_storage:
+            cloud_storage.check_and_upload_db()
         logger.info("Backup task completed successfully")
     except Exception as e:
         logger.error(f"Error in backup task: {str(e)}")
@@ -1104,7 +1114,11 @@ def graceful_shutdown_handler(signum, frame):
     
     try:
         logger.info("Performing final database upload before shutdown...")
-        success = cloud_storage.check_and_upload_db()
+        cloud_storage = get_cloud_storage()
+        if cloud_storage:
+            success = cloud_storage.check_and_upload_db()
+        else:
+            success = False
         if success:
             logger.info("Final database upload completed successfully")
         else:
