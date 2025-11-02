@@ -1,9 +1,6 @@
 # Use Python 3.12 slim image as base
 FROM python:3.12-slim
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
 # Set working directory in the container
 WORKDIR /app
 
@@ -19,12 +16,6 @@ RUN apt-get update && \
 
 # Copy the rest of the application
 COPY . .
-
-# Change ownership to non-root user
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
-USER appuser
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

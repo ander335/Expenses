@@ -33,7 +33,7 @@ RECEIPT_JSON_STRUCTURE = """{
         }
     ],
     "total_amount": "total amount as a number",
-    "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. The date migth appear in different formats, convert it to DD-MM-YYYY"
+    "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. If you see a date in any other format (like YYYY-MM-DD), convert it to DD-MM-YYYY format. For example: 2024-05-15 should become 15-05-2024"
 }"""
 
 # =============================================================================
@@ -46,7 +46,7 @@ USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: If the user provides additional com
 
 User comments: "{user_comment}"""
 
-RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Return ONLY a JSON object with these properties:
+RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}
 
 {user_adjustment_instructions}"""
@@ -56,6 +56,8 @@ UPDATE_RECEIPT_PROMPT = """You previously parsed a receipt and generated this JS
 {original_json}
 
 The user has provided additional comments or corrections: "{user_comment}"
+
+Current date for reference: {current_date}
 
 Please update the JSON data based on the user's comments. Return ONLY the updated JSON object with the same structure as before. Make sure to:
 1. Apply the user's corrections to the appropriate fields
@@ -283,10 +285,15 @@ def parse_receipt_image(image_path, user_comment=None):
     else:
         logger.info("Processing receipt without user comment")
 
-    # Always use the single prompt; insert the (possibly empty) user comment
+    # Get current date in DD-MM-YYYY format
+    current_date = datetime.now().strftime("%d-%m-%Y")
+    logger.debug(f"Using current date: {current_date}")
+
+    # Always use the single prompt; insert the (possibly empty) user comment and current date
     prompt = RECEIPT_PARSE_PROMPT.format(
         receipt_structure=RECEIPT_JSON_STRUCTURE,
-        user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment_text)
+        user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment_text),
+        current_date=current_date
     )
     
     # Read image and encode as base64
@@ -338,11 +345,16 @@ def update_receipt_with_comment(original_json: str, user_comment: str):
     """
     logger.info(f"Updating receipt data with user comment: {user_comment}")
     
-    # Prepare the prompt with original JSON and user comment
+    # Get current date in DD-MM-YYYY format
+    current_date = datetime.now().strftime("%d-%m-%Y")
+    logger.debug(f"Using current date: {current_date}")
+    
+    # Prepare the prompt with original JSON, user comment, and current date
     prompt = UPDATE_RECEIPT_PROMPT.format(
         original_json=original_json,
         user_comment=user_comment,
-        user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment)
+        user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment),
+        current_date=current_date
     )
     
     payload = {
