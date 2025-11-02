@@ -1,21 +1,41 @@
-MIT License
+CUSTOM LICENSE
 
 Copyright (c) 2025 ander335
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software contains both proprietary code and third-party open-source components.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+PROPRIETARY COMPONENTS:
+The original code, business logic, configuration, and custom implementations in this 
+project are the exclusive property of ander335. These proprietary components may not 
+be used, copied, modified, merged, published, distributed, sublicensed, or sold 
+without explicit written permission from the copyright holder.
+
+THIRD-PARTY COMPONENTS:
+This software incorporates third-party open-source libraries and components that are 
+subject to their respective licenses. See the requirements.txt file for a list of 
+dependencies. Users must comply with the terms of those respective licenses.
+
+The third-party components include but are not limited to:
+- python-telegram-bot (LGPLv3)
+- sqlalchemy (MIT License)
+- google-generativeai (Apache License 2.0)
+- requests (Apache License 2.0)
+- bleach (Apache License 2.0)
+- And other dependencies listed in requirements.txt
+
+USAGE RESTRICTIONS:
+- Personal use by the copyright holder: Permitted
+- Commercial use by third parties: Prohibited
+- Redistribution of the complete application: Prohibited
+- Modification and redistribution of proprietary components: Prohibited
+- Use of proprietary business logic in other projects: Prohibited
+
+Users who wish to use any part of the proprietary components must obtain explicit 
+written permission from ander335.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
