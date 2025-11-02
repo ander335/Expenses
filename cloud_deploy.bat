@@ -38,11 +38,11 @@ set REPOSITORY=europe-central2-docker.pkg.dev/%PROJECT_ID%/expenses-bot
 
 echo.
 REM echo Configuring authentication...
-REM call gcloud auth activate-service-account --key-file=auth_data/gen-lang-client-0006062814-5e5e4e1479fc.json
+REM gcloud auth activate-service-account --key-file=c:\Users\user\Downloads\gen-lang-client-0006062814-3a6b19bf0387.json
 
 echo.
 REM echo Configuring Docker for Google Container Registry...
-REM call gcloud auth configure-docker %REGION%-docker.pkg.dev --quiet
+REM gcloud auth configure-docker %REGION%-docker.pkg.dev --quiet
 
 if "%SKIP_BUILD%"=="false" (
     echo Checking Docker service status...

@@ -106,6 +106,7 @@ def make_secure_request(url, api_key, **kwargs):
         error_msg = str(e)
         if hasattr(e, 'response') and e.response is not None:
             error_msg = f"{e.response.status_code} {e.response.reason}"
+        logger.error(f"Secure API request failed: {error_msg}")
         raise requests.RequestException(f"API request failed: {error_msg}")
 
 def parse_gemini_json_response(result, operation_type="parsing"):

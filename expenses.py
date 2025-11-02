@@ -20,6 +20,11 @@ from db import (
 )
 from parse import parse_receipt_from_gemini
 from gemini import parse_receipt_image
+from security_utils import (
+    SecurityException, RateLimiter, SecureFileHandler, InputValidator, SessionManager,
+    rate_limiter, file_handler, session_manager,
+    ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, MAX_USERS
+)
 
 def get_admin_user_id() -> int:
     # TELEGRAM_ADMIN_ID is guaranteed valid by auth_data import
@@ -59,18 +64,57 @@ def get_persistent_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """DB-backed access control with admin approval flow."""
+    """Enhanced DB-backed access control with rate limiting and session management."""
     user = update.effective_user
-    user_id = user.id
-
+    
+    try:
+        user_id = InputValidator.validate_user_id(user.id)
+    except SecurityException as e:
+        logger.error(f"Invalid user ID from Telegram: {user.id}")
+        await update.message.reply_text("Authentication error. Please try again.")
+        return False
+    
+    # Check rate limiting first
+    if not rate_limiter.is_allowed(user_id):
+        remaining = rate_limiter.get_remaining_time(user_id)
+        logger.warning(f"Rate limit exceeded for user {user.full_name} (ID: {user_id})")
+        await update.message.reply_text(
+            f"Too many requests. Please wait {remaining} seconds before trying again."
+        )
+        return False
+    
+    # Validate session
+    if not session_manager.validate_session(user_id):
+        session_manager.create_session(user_id)
+    
     # Always authorize single configured admin
     if user_id == get_admin_user_id():
         create_user_if_missing(user_id, user.full_name, is_authorized=True, approval_requested=False)
+        session_manager.authenticate_session(user_id)
         return True
 
     db_user = get_user(user_id)
     if db_user and db_user.is_authorized:
+        session_manager.authenticate_session(user_id)
         return True
+
+    # Check if we've exceeded max users limit
+    # Only count this if it's a new user to prevent existing users from being locked out
+    if not db_user:
+        # Simple user count check - in production you might want a more sophisticated approach
+        try:
+            from sqlalchemy import func
+            from db import Session, User as DbUser
+            session = Session()
+            user_count = session.query(func.count(DbUser.user_id)).scalar()
+            session.close()
+            
+            if user_count >= MAX_USERS:
+                logger.warning(f"Max users limit ({MAX_USERS}) reached, rejecting new user {user_id}")
+                await update.message.reply_text("Sorry, the bot has reached its user limit.")
+                return False
+        except Exception as e:
+            logger.error(f"Error checking user count: {e}")
 
     # New user: create record and request approval
     if not db_user:
@@ -81,13 +125,15 @@ async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 InlineKeyboardButton("✅ Approve", callback_data=f"auth_approve_{user_id}"),
                 InlineKeyboardButton("❌ Reject", callback_data=f"auth_reject_{user_id}")
             ]]
+            admin_message = (
+                "🔐 New access request:\n"
+                f"User: {InputValidator.sanitize_text(user.full_name)} (ID: {user_id})\n"
+                f"Username: @{user.username or 'N/A'}\n\n"
+                "Approve this user to allow them to use the bot."
+            )
             await context.bot.send_message(
                 chat_id=get_admin_user_id(),
-                text=(
-                    "🔐 New access request:\n"
-                    f"User: {user.full_name} (ID: {user_id})\n\n"
-                    "Approve this user to allow them to use the bot."
-                ),
+                text=admin_message,
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
         except Exception as e:
@@ -104,12 +150,14 @@ async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     InlineKeyboardButton("✅ Approve", callback_data=f"auth_approve_{user_id}"),
                     InlineKeyboardButton("❌ Reject", callback_data=f"auth_reject_{user_id}")
                 ]]
+                admin_message = (
+                    "🔐 Access request (re-sent):\n"
+                    f"User: {InputValidator.sanitize_text(user.full_name)} (ID: {user_id})\n"
+                    f"Username: @{user.username or 'N/A'}"
+                )
                 await context.bot.send_message(
                     chat_id=get_admin_user_id(),
-                    text=(
-                        "🔐 Access request (re-sent):\n"
-                        f"User: {user.full_name} (ID: {user_id})"
-                    ),
+                    text=admin_message,
                     reply_markup=InlineKeyboardMarkup(buttons)
                 )
             except Exception as e:
@@ -326,49 +374,78 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     photo = update.message.photo[-1]  # Get highest resolution photo
     file = await context.bot.get_file(photo.file_id)
-    file_path = f"receipt_{photo.file_id}.jpg"
     
-    # Get user comment/caption if provided
-    user_comment = update.message.caption if update.message.caption else None
-    if user_comment:
-        logger.info(f"User provided comment with photo: {user_comment}")
-    else:
-        logger.info("No user comment provided with photo")
+    # Create secure temporary file
+    file_path = file_handler.create_secure_temp_file(".jpg")
     
-    logger.info(f"Downloading receipt photo (file_id: {photo.file_id})")
-    await file.download_to_drive(file_path)
-    logger.info(f"Receipt photo downloaded to {file_path}")
-
-    await update.message.reply_text("Processing your receipt...")
-
     try:
-        # Parse image with Gemini, including user comment if provided
-        logger.info(f"Sending receipt image to Gemini for analysis")
-        gemini_output = parse_receipt_image(file_path, user_comment)
-        logger.info("Successfully received response from Gemini")
+        # Get user comment/caption if provided
+        user_comment = update.message.caption if update.message.caption else None
+        if user_comment:
+            user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
+            logger.info(f"User provided comment with photo: {user_comment[:100]}...")
+        else:
+            logger.info("No user comment provided with photo")
         
-        # Parse the receipt data into object
-        user_id = update.effective_user.id
-        logger.info(f"Parsing Gemini output for user {user_id}")
-        parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
-        logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
-        
-        # Present preview with approval buttons using shared presenter
-        return await present_parsed_receipt(
-            update,
-            context,
-            parsed_receipt=parsed_receipt,
-            original_json=gemini_output,
-            preface="Here's what I found in your receipt:",
-            user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None)
-        )
+        logger.info(f"Downloading receipt photo (file_id: {photo.file_id})")
+        await file.download_to_drive(file_path)
+        logger.info(f"Receipt photo downloaded to {file_path}")
+
+        # Validate file size and type
+        try:
+            file_handler.validate_file_size(file_path)
+            detected_mime_type = file_handler.validate_file_type(file_path, ALLOWED_IMAGE_TYPES)
+            logger.info(f"File validation successful: {detected_mime_type}")
+        except SecurityException as e:
+            logger.warning(f"File validation failed: {e.user_message}")
+            await update.message.reply_text(f"❌ {e.user_message}")
+            return ConversationHandler.END
+
+        await update.message.reply_text("Processing your receipt...")
+
+        try:
+            # Parse image with Gemini, including user comment if provided
+            logger.info(f"Sending receipt image to Gemini for analysis")
+            gemini_output = parse_receipt_image(file_path, user_comment)
+            logger.info("Successfully received response from Gemini")
+            
+            # Validate and sanitize the response
+            try:
+                import json
+                raw_data = json.loads(gemini_output)
+                validated_data = InputValidator.validate_receipt_data(raw_data)
+                gemini_output = json.dumps(validated_data)
+            except (json.JSONDecodeError, SecurityException) as e:
+                logger.error(f"Invalid data from Gemini API: {e}")
+                await update.message.reply_text("❌ Sorry, I couldn't process the receipt properly. Please try again.")
+                return ConversationHandler.END
+            
+            # Parse the receipt data into object
+            user_id = update.effective_user.id
+            logger.info(f"Parsing Gemini output for user {user_id}")
+            parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
+            logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
+            
+            # Present preview with approval buttons using shared presenter
+            return await present_parsed_receipt(
+                update,
+                context,
+                parsed_receipt=parsed_receipt,
+                original_json=gemini_output,
+                preface="Here's what I found in your receipt:",
+                user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None)
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to process receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ Failed to process receipt. Please try again with a clearer photo.")
         
     except Exception as e:
-        logger.error(f"Failed to process receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"Failed to process receipt: {e}")
+        logger.error(f"Unexpected error in photo handling: {e}", exc_info=True)
+        await update.message.reply_text("❌ An error occurred while processing your photo. Please try again.")
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        # Always clean up the temporary file
+        file_handler.cleanup_temp_file(file_path)
         
     return ConversationHandler.END
 
@@ -445,11 +522,22 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     user_comment = update.message.text
     
-    logger.info(f"Received user comment from {user.full_name} (ID: {user_id}): {user_comment}")
+    logger.info(f"Received user comment from {user.full_name} (ID: {user_id}): {user_comment[:100]}...")
     
     user_data = receipt_data.get(user_id)
     if not user_data:
         await update.message.reply_text("Sorry, I couldn't find your receipt data. Please start over by sending a new receipt photo.")
+        return ConversationHandler.END
+    
+    # Sanitize user input
+    try:
+        user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
+        if not user_comment.strip():
+            await update.message.reply_text("❌ Your comment appears to be empty. Please try again.")
+            return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error sanitizing user comment: {e}")
+        await update.message.reply_text("❌ Invalid comment. Please try again.")
         return ConversationHandler.END
     
     await update.message.reply_text("Processing your changes...")
@@ -474,6 +562,17 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         updated_json = update_receipt_with_comment(original_json, user_comment)
         logger.info("Successfully received updated JSON from Gemini")
         
+        # Validate and sanitize the response
+        try:
+            import json
+            raw_data = json.loads(updated_json)
+            validated_data = InputValidator.validate_receipt_data(raw_data)
+            updated_json = json.dumps(validated_data)
+        except (json.JSONDecodeError, SecurityException) as e:
+            logger.error(f"Invalid updated data from Gemini API: {e}")
+            await update.message.reply_text("❌ Sorry, I couldn't apply your changes properly. Please try again.")
+            return ConversationHandler.END
+        
         # Parse the updated receipt data
         updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
         logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
@@ -490,7 +589,7 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     except Exception as e:
         logger.error(f"Failed to process user comment for user {user_id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"Failed to process your changes: {e}")
+        await update.message.reply_text("❌ Failed to process your changes. Please try again.")
         return ConversationHandler.END
 
 
@@ -505,53 +604,80 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get the voice message
     voice = update.message.voice
     file = await context.bot.get_file(voice.file_id)
-    voice_file_path = f"receipt_voice_{voice.file_id}.ogg"
+    voice_file_path = file_handler.create_secure_temp_file(".ogg")
     
-    logger.info(f"Downloading voice receipt (file_id: {voice.file_id})")
-    await file.download_to_drive(voice_file_path)
-    logger.info(f"Voice receipt downloaded to {voice_file_path}")
-
-    await update.message.reply_text("🎙️ Processing your voice receipt...")
-
     try:
-        # Transcribe and notify user immediately
-        transcribed_text = await transcribe_voice_and_notify(
-            update,
-            context,
-            voice_file_path=voice_file_path,
-            heard_prefix="🎙️ I heard:",
-            next_hint="🛠️ Creating a receipt summary..."
-        )
-        
-        # Convert transcribed text to receipt structure using Gemini
-        logger.info("Converting transcribed text to receipt structure")
-        gemini_output = parse_voice_to_receipt(transcribed_text)
-        logger.info("Successfully received receipt structure from Gemini")
-        
-        # Parse the receipt data into object
-        user_id = update.effective_user.id
-        logger.info(f"Parsing Gemini output for user {user_id}")
-        parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
-        logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
+        logger.info(f"Downloading voice receipt (file_id: {voice.file_id})")
+        await file.download_to_drive(voice_file_path)
+        logger.info(f"Voice receipt downloaded to {voice_file_path}")
 
-        # Present preview with approval buttons
-        return await present_parsed_receipt(
-            update,
-            context,
-            parsed_receipt=parsed_receipt,
-            original_json=gemini_output,
-            preface="Here's what I understood from your voice message:",
-            user_text_line=f"🎙️ Your message: \"{transcribed_text}\""
-        )
-        
+        # Validate file size and type
+        try:
+            file_handler.validate_file_size(voice_file_path)
+            detected_mime_type = file_handler.validate_file_type(voice_file_path, ALLOWED_AUDIO_TYPES)
+            logger.info(f"Voice file validation successful: {detected_mime_type}")
+        except SecurityException as e:
+            logger.warning(f"Voice file validation failed: {e.user_message}")
+            await update.message.reply_text(f"❌ {e.user_message}")
+            return ConversationHandler.END
+
+        await update.message.reply_text("🎙️ Processing your voice receipt...")
+
+        try:
+            # Transcribe and notify user immediately
+            transcribed_text = await transcribe_voice_and_notify(
+                update,
+                context,
+                voice_file_path=voice_file_path,
+                heard_prefix="🎙️ I heard:",
+                next_hint="🛠️ Creating a receipt summary..."
+            )
+            
+            # Sanitize transcribed text
+            transcribed_text = InputValidator.sanitize_text(transcribed_text, max_length=1000)
+            
+            # Convert transcribed text to receipt structure using Gemini
+            logger.info("Converting transcribed text to receipt structure")
+            gemini_output = parse_voice_to_receipt(transcribed_text)
+            logger.info("Successfully received receipt structure from Gemini")
+            
+            # Validate and sanitize the response
+            try:
+                import json
+                raw_data = json.loads(gemini_output)
+                validated_data = InputValidator.validate_receipt_data(raw_data)
+                gemini_output = json.dumps(validated_data)
+            except (json.JSONDecodeError, SecurityException) as e:
+                logger.error(f"Invalid data from Gemini API: {e}")
+                await update.message.reply_text("❌ Sorry, I couldn't understand your voice message properly. Please try again.")
+                return ConversationHandler.END
+            
+            # Parse the receipt data into object
+            user_id = update.effective_user.id
+            logger.info(f"Parsing Gemini output for user {user_id}")
+            parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
+            logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
+
+            # Present preview with approval buttons
+            return await present_parsed_receipt(
+                update,
+                context,
+                parsed_receipt=parsed_receipt,
+                original_json=gemini_output,
+                preface="Here's what I understood from your voice message:",
+                user_text_line=f"🎙️ Your message: \"{transcribed_text}\""
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to process voice receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ Failed to process voice receipt. Please try again or use a photo instead.")
+    
     except Exception as e:
-        logger.error(f"Failed to process voice receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"Failed to process voice receipt: {e}")
+        logger.error(f"Unexpected error in voice receipt handling: {e}", exc_info=True)
+        await update.message.reply_text("❌ An error occurred while processing your voice message. Please try again.")
     finally:
         # Clean up the voice file
-        if os.path.exists(voice_file_path):
-            os.remove(voice_file_path)
-            logger.info(f"Cleaned up voice file: {voice_file_path}")
+        file_handler.cleanup_temp_file(voice_file_path)
         
     return ConversationHandler.END
 
@@ -571,66 +697,94 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get the voice message
     voice = update.message.voice
     file = await context.bot.get_file(voice.file_id)
-    voice_file_path = f"voice_{voice.file_id}.ogg"
-    
-    logger.info(f"Downloading voice message (file_id: {voice.file_id})")
-    await file.download_to_drive(voice_file_path)
-    logger.info(f"Voice message downloaded to {voice_file_path}")
-
-    await update.message.reply_text("🎙️ Processing your voice message...")
+    voice_file_path = file_handler.create_secure_temp_file(".ogg")
     
     try:
-        # Transcribe and notify user immediately
-        user_comment = await transcribe_voice_and_notify(
-            update,
-            context,
-            voice_file_path=voice_file_path,
-            heard_prefix="🎙️ Your voice comment:",
-            next_hint="🛠️ Applying your changes to the receipt..."
-        )
+        logger.info(f"Downloading voice message (file_id: {voice.file_id})")
+        await file.download_to_drive(voice_file_path)
+        logger.info(f"Voice message downloaded to {voice_file_path}")
+
+        # Validate file size and type
+        try:
+            file_handler.validate_file_size(voice_file_path)
+            detected_mime_type = file_handler.validate_file_type(voice_file_path, ALLOWED_AUDIO_TYPES)
+            logger.info(f"Voice file validation successful: {detected_mime_type}")
+        except SecurityException as e:
+            logger.warning(f"Voice file validation failed: {e.user_message}")
+            await update.message.reply_text(f"❌ {e.user_message}")
+            return ConversationHandler.END
+
+        await update.message.reply_text("🎙️ Processing your voice message...")
         
-        # Remove buttons from the previous message if it exists
-        old_message_id = user_data.get("latest_message_id")
-        if old_message_id:
+        try:
+            # Transcribe and notify user immediately
+            user_comment = await transcribe_voice_and_notify(
+                update,
+                context,
+                voice_file_path=voice_file_path,
+                heard_prefix="🎙️ Your voice comment:",
+                next_hint="🛠️ Applying your changes to the receipt..."
+            )
+            
+            # Sanitize transcribed text
+            user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
+            
+            # Remove buttons from the previous message if it exists
+            old_message_id = user_data.get("latest_message_id")
+            if old_message_id:
+                try:
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=user_id,
+                        message_id=old_message_id,
+                        reply_markup=None
+                    )
+                    logger.info(f"Removed buttons from previous message {old_message_id} for user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Could not remove buttons from previous message {old_message_id}: {str(e)}")
+            
+            # Get the original JSON and send update request to Gemini
+            original_json = user_data["original_json"]
+            logger.info(f"Sending update request to Gemini with transcribed comment: {user_comment}")
+            updated_json = update_receipt_with_comment(original_json, user_comment)
+            logger.info("Successfully received updated JSON from Gemini")
+            
+            # Validate and sanitize the response
             try:
-                await context.bot.edit_message_reply_markup(
-                    chat_id=user_id,
-                    message_id=old_message_id,
-                    reply_markup=None
-                )
-                logger.info(f"Removed buttons from previous message {old_message_id} for user {user_id}")
-            except Exception as e:
-                logger.warning(f"Could not remove buttons from previous message {old_message_id}: {str(e)}")
-        
-        # Get the original JSON and send update request to Gemini
-        original_json = user_data["original_json"]
-        logger.info(f"Sending update request to Gemini with transcribed comment: {user_comment}")
-        updated_json = update_receipt_with_comment(original_json, user_comment)
-        logger.info("Successfully received updated JSON from Gemini")
-        
-        # Parse the updated receipt data
-        updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
-        logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
-        
-        # Present updated preview using shared presenter
-        return await present_parsed_receipt(
-            update,
-            context,
-            parsed_receipt=updated_receipt,
-            original_json=updated_json,
-            preface="Here's the updated receipt:",
-            user_text_line=f"🎙️ Your voice message: \"{user_comment}\""
-        )
-        
+                import json
+                raw_data = json.loads(updated_json)
+                validated_data = InputValidator.validate_receipt_data(raw_data)
+                updated_json = json.dumps(validated_data)
+            except (json.JSONDecodeError, SecurityException) as e:
+                logger.error(f"Invalid updated data from Gemini API: {e}")
+                await update.message.reply_text("❌ Sorry, I couldn't apply your changes properly. Please try again.")
+                return ConversationHandler.END
+            
+            # Parse the updated receipt data
+            updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
+            logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
+            
+            # Present updated preview using shared presenter
+            return await present_parsed_receipt(
+                update,
+                context,
+                parsed_receipt=updated_receipt,
+                original_json=updated_json,
+                preface="Here's the updated receipt:",
+                user_text_line=f"🎙️ Your voice message: \"{user_comment}\""
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to process voice comment for user {user_id}: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ Failed to process your voice message. Please try typing your changes instead.")
+            return ConversationHandler.END
+    
     except Exception as e:
-        logger.error(f"Failed to process voice comment for user {user_id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"Failed to process your voice message: {e}")
+        logger.error(f"Unexpected error in voice comment handling: {e}", exc_info=True)
+        await update.message.reply_text("❌ An error occurred while processing your voice message. Please try again.")
         return ConversationHandler.END
     finally:
         # Clean up the voice file
-        if os.path.exists(voice_file_path):
-            os.remove(voice_file_path)
-            logger.info(f"Cleaned up voice file: {voice_file_path}")
+        file_handler.cleanup_temp_file(voice_file_path)
 
 
 async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -772,11 +926,39 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Sanitize and validate user input
+    try:
+        user_text = InputValidator.sanitize_text(user_text, max_length=1000)
+        if not user_text.strip():
+            await update.message.reply_text(
+                "❌ Your description appears to be empty. Please try again.",
+                reply_markup=get_persistent_keyboard()
+            )
+            return
+    except Exception as e:
+        logger.error(f"Error sanitizing user text: {e}")
+        await update.message.reply_text(
+            "❌ Invalid description. Please try again.",
+            reply_markup=get_persistent_keyboard()
+        )
+        return
+
     try:
         await update.message.reply_text("📝 Processing your text receipt...")
         logger.info("Converting text to receipt structure via Gemini")
         gemini_output = parse_voice_to_receipt(user_text)
         logger.info("Successfully received receipt structure from Gemini for text input")
+
+        # Validate and sanitize the response
+        try:
+            import json
+            raw_data = json.loads(gemini_output)
+            validated_data = InputValidator.validate_receipt_data(raw_data)
+            gemini_output = json.dumps(validated_data)
+        except (json.JSONDecodeError, SecurityException) as e:
+            logger.error(f"Invalid data from Gemini API: {e}")
+            await update.message.reply_text("❌ Sorry, I couldn't process your description properly. Please try again.")
+            return ConversationHandler.END
 
         user_id = update.effective_user.id
         logger.info(f"Parsing Gemini output for user {user_id}")
@@ -793,9 +975,8 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Failed to process /add text receipt for user {user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"Failed to process text receipt: {e}")
+        await update.message.reply_text("❌ Failed to process text receipt. Please try again.")
         return ConversationHandler.END
-    await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
 async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     """Background task to check and upload database changes."""
@@ -804,6 +985,19 @@ async def backup_task(context: ContextTypes.DEFAULT_TYPE):
         logger.info("Backup task completed successfully")
     except Exception as e:
         logger.error(f"Error in backup task: {str(e)}")
+
+async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
+    """Background task for periodic cleanup."""
+    try:
+        # Clean up expired sessions
+        session_manager.cleanup_expired_sessions()
+        logger.debug("Session cleanup completed")
+        
+        # Clean up any orphaned temporary files
+        file_handler.cleanup_all_temp_files()
+        logger.debug("Temporary file cleanup completed")
+    except Exception as e:
+        logger.error(f"Error in cleanup task: {str(e)}")
 
 # Environment variables
 USE_WEBHOOK = os.getenv('USE_WEBHOOK', 'false').lower() == 'true'
@@ -912,6 +1106,22 @@ def graceful_shutdown_handler(signum, frame):
     except Exception as e:
         logger.error(f"Error during final database upload: {e}")
     
+    try:
+        # Clean up temporary files
+        logger.info("Cleaning up temporary files...")
+        file_handler.cleanup_all_temp_files()
+        logger.info("Temporary file cleanup completed")
+    except Exception as e:
+        logger.error(f"Error during temporary file cleanup: {e}")
+    
+    try:
+        # Clean up expired sessions
+        logger.info("Cleaning up expired sessions...")
+        session_manager.cleanup_expired_sessions()
+        logger.info("Session cleanup completed")
+    except Exception as e:
+        logger.error(f"Error during session cleanup: {e}")
+    
     logger.info("Graceful shutdown complete. Exiting...")
     sys.exit(0)
 
@@ -970,6 +1180,9 @@ def main():
     
     # Add the backup task to the application - run every 10 minutes
     application.job_queue.run_repeating(backup_task, interval=600)  # Run every 10 minutes (600 seconds)
+    
+    # Add cleanup task - run every hour
+    application.job_queue.run_repeating(cleanup_task, interval=3600)  # Run every hour
     
     if USE_WEBHOOK:
         # Auto-detect the service URL
