@@ -41,6 +41,7 @@ RECEIPT_JSON_STRUCTURE = """{
 # =============================================================================
 USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: If the user provides additional comments below (inserted as {user_comment}), use those comments to override or adjust specific extracted fields when they conflict with the image. The user comments should take precedence for any conflicting information. Special instructions:
 - DATA OVERRIDE: Use user comments to correct dates, merchant names, amounts, categories, or any other field they explicitly mention.
+- DATE HANDLING: If the user provides a date with day and month but NO YEAR (e.g., "15-05", "May 15", "change date to 15th of May"), use the current year from the current date. Always format as DD-MM-YYYY.
 - CURRENCY CONVERSION: If the user requests currency conversion (e.g., "convert to USD", "convert euros to CZK", "use exchange rate from purchase date"), perform the conversion and return the converted amounts in the JSON. Apply the conversion to both individual item prices and the total_amount. Use realistic exchange rates for the date specified (or current rates if no date specified).
 - PRESERVE ORIGINAL: If currency conversion is requested, you may add a comment in the "text" field noting the original currency and amounts for reference.
 
@@ -48,6 +49,11 @@ User comments: "{user_comment}"""
 
 RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}
+
+DATE HANDLING INSTRUCTIONS:
+- If the receipt shows a date with day and month but NO YEAR (e.g., "15-05", "May 15", "15/05"), use the current year from the current date provided above.
+- Always convert the final date to DD-MM-YYYY format.
+- Examples: If current date is "02-11-2025" and receipt shows "15-05", return "15-05-2025".
 
 {user_adjustment_instructions}"""
 
@@ -65,6 +71,11 @@ Please update the JSON data based on the user's comments. Return ONLY the update
 3. Update the "description" field to mention what was changed based on user comments
 4. If currency conversion is requested, convert all amounts appropriately
 
+DATE HANDLING INSTRUCTIONS:
+- If the user provides a date with day and month but NO YEAR (e.g., "15-05", "May 15", "15/05"), use the current year from the current date provided above.
+- Always convert the final date to DD-MM-YYYY format.
+- Examples: If current date is "02-11-2025" and user mentions "15-05", return "15-05-2025".
+
 Language requirement:
 - Do NOT translate existing fields from the original_json. Preserve their original language and values unless explicitly changed by the user comments.
 - Apply the user's corrections exactly as given. If the user provides new text in another language, keep it as provided (no translation).
@@ -81,6 +92,12 @@ VOICE_TO_RECEIPT_PROMPT = """Based on the text provided by the user describing t
 - Choose the most appropriate category from the available list
 - Set quantity to 1 if not specified
 - If the user provides any non-related information to the receipt (context, stories, additional comments), summarize it and put it in the receipt description field. Write the description in a direct, subjectless style without referring to "the user" (e.g., "Not very tasty, caused digestive issues" instead of "The user commented it was not very tasty")
+
+DATE HANDLING INSTRUCTIONS:
+- If the user mentions a date with day and month but NO YEAR (e.g., "15-05", "May 15", "15th of May", "yesterday", "today"), use the current year from the current date provided above.
+- For relative dates like "yesterday", "today", "last week", calculate the actual date using the current date as reference.
+- Always convert the final date to DD-MM-YYYY format.
+- Examples: If current date is "02-11-2025" and user says "May 15", return "15-05-2025".
 
 Language requirement:
 - Always respond in ENGLISH only. If the user's text is in another language, translate any descriptions and merchant names to English. Ensure all JSON string values (description, category, merchant, positions[].description, positions[].category) are English. Numeric values and dates should not be translated.
