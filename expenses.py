@@ -3,7 +3,7 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler, CallbackQueryHandler
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from auth_data import BOT_TOKEN
+from auth_data import BOT_TOKEN, TELEGRAM_ADMIN_ID
 
 import os
 import json
@@ -15,15 +15,17 @@ import sys
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
-    delete_receipt, get_monthly_summary
+    delete_receipt, get_monthly_summary,
+    get_user, create_user_if_missing, set_user_authorized, set_user_approval_requested
 )
 from parse import parse_receipt_from_gemini
 from gemini import parse_receipt_image
 
-# List of allowed Telegram user IDs (integers)
-ALLOWED_USERS = [
-    98336105,
-]
+def get_admin_user_id() -> int:
+    # TELEGRAM_ADMIN_ID is guaranteed valid by auth_data import
+    return TELEGRAM_ADMIN_ID
+
+# Group admin support removed; single admin is used via TELEGRAM_ADMIN_ID.
 
 # Common help text for the bot
 HELP_TEXT = (
@@ -56,20 +58,72 @@ def get_persistent_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-async def check_user_access(update: Update) -> bool:
-    """Check if the user is allowed to use the bot."""
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        logger.warning(f"Unauthorized access attempt from user {update.effective_user.full_name} (ID: {user_id})")
-        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """DB-backed access control with admin approval flow."""
+    user = update.effective_user
+    user_id = user.id
+
+    # Always authorize single configured admin
+    if user_id == get_admin_user_id():
+        create_user_if_missing(user_id, user.full_name, is_authorized=True, approval_requested=False)
+        return True
+
+    db_user = get_user(user_id)
+    if db_user and db_user.is_authorized:
+        return True
+
+    # New user: create record and request approval
+    if not db_user:
+        logger.warning(f"Unauthorized (new) access attempt from {user.full_name} (ID: {user_id}) - requesting admin approval")
+        create_user_if_missing(user_id, user.full_name, is_authorized=False, approval_requested=True)
+        try:
+            buttons = [[
+                InlineKeyboardButton("✅ Approve", callback_data=f"auth_approve_{user_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"auth_reject_{user_id}")
+            ]]
+            await context.bot.send_message(
+                chat_id=get_admin_user_id(),
+                text=(
+                    "🔐 New access request:\n"
+                    f"User: {user.full_name} (ID: {user_id})\n\n"
+                    "Approve this user to allow them to use the bot."
+                ),
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception as e:
+            logger.error(f"Failed to send approval request: {e}", exc_info=True)
+        await update.message.reply_text("Your access request has been sent to the admin. You'll be notified once approved.")
         return False
-    return True
+
+    # Existing but not authorized (pending)
+    if db_user and not db_user.is_authorized:
+        if not db_user.approval_requested:
+            set_user_approval_requested(user_id, True)
+            try:
+                buttons = [[
+                    InlineKeyboardButton("✅ Approve", callback_data=f"auth_approve_{user_id}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"auth_reject_{user_id}")
+                ]]
+                await context.bot.send_message(
+                    chat_id=get_admin_user_id(),
+                    text=(
+                        "🔐 Access request (re-sent):\n"
+                        f"User: {user.full_name} (ID: {user_id})"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            except Exception as e:
+                logger.error(f"Failed to re-send approval request: {e}", exc_info=True)
+        await update.message.reply_text("Your access is pending admin approval. Please wait.")
+        return False
+
+    return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Start command received from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
     
     db_user = User(user_id=user.id, name=user.full_name)
@@ -82,7 +136,7 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"List command received from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
     
     try:
@@ -110,7 +164,7 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     logger.info(f"Delete command received from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
     
     try:
@@ -133,7 +187,7 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Summary command received from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
     
     try:
@@ -164,7 +218,7 @@ async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Flush command received from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
     
     try:
@@ -267,7 +321,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Received photo from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return ConversationHandler.END
     
     photo = update.message.photo[-1]  # Get highest resolution photo
@@ -445,7 +499,7 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.effective_user
     logger.info(f"Received voice receipt from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return ConversationHandler.END
     
     # Get the voice message
@@ -588,7 +642,8 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
     user_id = user.id
     
     # Check user access for callback queries
-    if user_id not in ALLOWED_USERS:
+    db_user = get_user(user_id)
+    if not db_user or not db_user.is_authorized:
         logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user_id})")
         await query.edit_message_text("Sorry, you are not authorized to use this bot.")
         return
@@ -645,17 +700,67 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Received text message from user {user.full_name} (ID: {user.id})")
     
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
     
     reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase, or\n• ✍️ Use /add followed by a text description (e.g., /add Bought sushi for 20 USD at Kyoto)\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
+    
+    await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
+
+async def handle_user_auth_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only handler to approve or reject user access requests."""
+    query = update.callback_query
+    await query.answer()
+
+    admin = update.effective_user
+    admin_id = admin.id
+
+    if admin_id != get_admin_user_id():
+        logger.warning(f"Non-admin user attempted to manage auth: {admin.full_name} ({admin_id})")
+        await query.edit_message_text("Only the admin can manage access requests.")
+        return
+
+    try:
+        parts = query.data.split('_')  # ["auth", "approve|reject", "<user_id>"]
+        if len(parts) != 3:
+            await query.edit_message_text("Invalid action.")
+            return
+        _, action, target_id_str = parts
+        target_user_id = int(target_id_str)
+
+        target_user = get_user(target_user_id)
+        target_name = target_user.name if target_user else str(target_user_id)
+
+        if action == 'approve':
+            set_user_authorized(target_user_id, True)
+            set_user_approval_requested(target_user_id, False)
+            await query.edit_message_text(f"✅ Approved access for {target_name} (ID: {target_user_id}).")
+            # Notify the user
+            try:
+                await context.bot.send_message(chat_id=target_user_id, text="✅ Your access to Expenses Bot has been approved. Send /start to begin.")
+            except Exception as e:
+                logger.warning(f"Failed to notify approved user {target_user_id}: {e}")
+        elif action == 'reject':
+            set_user_authorized(target_user_id, False)
+            set_user_approval_requested(target_user_id, False)
+            await query.edit_message_text(f"❌ Rejected access for {target_name} (ID: {target_user_id}).")
+            # Notify the user
+            try:
+                await context.bot.send_message(chat_id=target_user_id, text="❌ Your access request was rejected by the admin.")
+            except Exception as e:
+                logger.warning(f"Failed to notify rejected user {target_user_id}: {e}")
+        else:
+            await query.edit_message_text("Unknown action.")
+    except Exception as e:
+        logger.error(f"Error handling user auth decision: {e}", exc_info=True)
+        await query.edit_message_text("Failed to process the request.")
 
 async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add command to create a receipt from a text description."""
     user = update.effective_user
     logger.info(f"Add command received from user {user.full_name} (ID: {user.id})")
 
-    if not await check_user_access(update):
+    if not await check_user_access(update, context):
         return
 
     # Extract the text after /add
@@ -857,6 +962,8 @@ def main():
     
     # Handler for persistent buttons
     application.add_handler(CallbackQueryHandler(handle_persistent_buttons, pattern="^persistent_"))
+    # Handler for admin approvals
+    application.add_handler(CallbackQueryHandler(handle_user_auth_decision, pattern=r"^auth_(approve|reject)_\d+$"))
     
     # Handler for text messages (not commands)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

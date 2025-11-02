@@ -5,7 +5,7 @@ Manages SQLite database for expenses using SQLAlchemy ORM with Google Cloud Stor
 
 from dataclasses import dataclass
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
 from cloud_storage import CloudStorage
@@ -26,6 +26,9 @@ class User(Base):
     __tablename__ = "users"
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    # Authorization fields (no is_admin; single admin via TELEGRAM_ADMIN_ID)
+    is_authorized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    approval_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     receipts: Mapped[List["Receipt"]] = relationship("Receipt", back_populates="user")
 
 @dataclass
@@ -75,22 +78,33 @@ def migrate_database():
     try:
         insp = inspect(engine)
 
-        # If table does not exist yet, create_all() below will handle it
         table_names = insp.get_table_names()
-        if 'receipts' not in table_names:
-            logger.info("Receipts table doesn't exist yet, will be created by create_all()")
-            return
 
-        columns = [col['name'] for col in insp.get_columns('receipts')]
+        # --- Receipts table migrations ---
+        if 'receipts' in table_names:
+            columns = [col['name'] for col in insp.get_columns('receipts')]
 
-        if 'description' not in columns:
-            logger.info("Adding 'description' column to receipts table...")
-            # Use driver-level SQL execution for DDL in SQLAlchemy 2.0
-            with engine.begin() as conn:
-                conn.exec_driver_sql("ALTER TABLE receipts ADD COLUMN description TEXT")
-            logger.info("Successfully added 'description' column to receipts table")
+            if 'description' not in columns:
+                logger.info("Adding 'description' column to receipts table...")
+                # Use driver-level SQL execution for DDL in SQLAlchemy 2.0
+                with engine.begin() as conn:
+                    conn.exec_driver_sql("ALTER TABLE receipts ADD COLUMN description TEXT")
+                logger.info("Successfully added 'description' column to receipts table")
         else:
-            logger.info("Database schema is up to date - 'description' column already exists")
+            logger.info("Receipts table doesn't exist yet, will be created by create_all()")
+
+        # --- Users table migrations ---
+        if 'users' in table_names:
+            user_columns = [col['name'] for col in insp.get_columns('users')]
+            with engine.begin() as conn:
+                if 'is_authorized' not in user_columns:
+                    logger.info("Adding 'is_authorized' column to users table...")
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN is_authorized BOOLEAN NOT NULL DEFAULT 0")
+                if 'approval_requested' not in user_columns:
+                    logger.info("Adding 'approval_requested' column to users table...")
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN approval_requested BOOLEAN NOT NULL DEFAULT 0")
+        else:
+            logger.info("Users table doesn't exist yet, will be created by create_all()")
 
     except Exception as e:
         logger.error(f"Error during database migration: {e}")
@@ -105,15 +119,64 @@ migrate_database()
 
 def get_or_create_user(user: User) -> User:
     session = Session()
-    existing_user = session.query(User).filter_by(user_id=user.user_id).first()
-    if not existing_user:
+    try:
+        existing_user = session.query(User).filter_by(user_id=user.user_id).first()
+        if not existing_user:
+            session.add(user)
+            session.commit()
+            result = user
+        else:
+            result = existing_user
+        return result
+    finally:
+        session.close()
+
+def get_user(user_id: int) -> Optional[User]:
+    session = Session()
+    try:
+        return session.query(User).filter_by(user_id=user_id).first()
+    finally:
+        session.close()
+
+def create_user_if_missing(user_id: int, name: str, *, is_authorized: bool = False, approval_requested: bool = False) -> User:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if user:
+            return user
+        user = User(
+            user_id=user_id,
+            name=name,
+            is_authorized=is_authorized,
+            approval_requested=approval_requested,
+        )
         session.add(user)
         session.commit()
-        result = user
-    else:
-        result = existing_user
-    session.close()
-    return result
+        return user
+    finally:
+        session.close()
+
+def set_user_authorized(user_id: int, authorized: bool) -> None:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if not user:
+            return
+        user.is_authorized = authorized
+        session.commit()
+    finally:
+        session.close()
+
+def set_user_approval_requested(user_id: int, requested: bool = True) -> None:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if not user:
+            return
+        user.approval_requested = requested
+        session.commit()
+    finally:
+        session.close()
 
 def get_receipt(receipt_id: int) -> Optional[Receipt]:
     session = Session()

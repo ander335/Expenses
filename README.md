@@ -116,9 +116,11 @@ The bot supports two operation modes:
    - Go to the Cloud Run console
    - Select your deployed service
    - Click "Edit & Deploy New Revision"
-   - Add your environment variables:
-     - `TELEGRAM_BOT_TOKEN`
-     - Add any other configuration variables needed
+    - Add your environment variables:
+       - `TELEGRAM_BOT_TOKEN` (required)
+       - `GEMINI_API_KEY` (required)
+       - `USE_WEBHOOK`, `WEBHOOK_URL`, `PORT` (optional, for webhook mode)
+      - `TELEGRAM_ADMIN_ID` (required) — Telegram user ID of the admin who approves new users
 
 5. **Set up Service Account and Permissions**
    - Create a service account for your bot
@@ -145,3 +147,15 @@ The bot supports two operation modes:
 - Replace `[PROJECT-ID]` and `[REGION]` in the commands with your actual GCP project ID and preferred region
 - The bot will need to be modified to read environment variables instead of local files for configuration
 - Ensure your service account has the necessary permissions to access Cloud Storage and other GCP services
+
+## User Authorization Flow
+
+This bot now uses an admin-approval flow for new users:
+
+- When a new user sends /start, the bot creates a pending user record and sends an authorization request to the admin (defined by `TELEGRAM_ADMIN_ID`).
+- The admin receives inline buttons in Telegram to Approve or Reject the user.
+- Once approved, the user is marked as authorized in the database and can use all bot features.
+- The configured admin is always authorized automatically and marked as admin in the database.
+
+Admin configuration:
+- Set `TELEGRAM_ADMIN_ID` to the Telegram user ID of your bot admin. If not set, the bot falls back to a default admin ID (98336105) for compatibility.

@@ -47,7 +47,7 @@ REM call gcloud auth configure-docker %REGION%-docker.pkg.dev --quiet
 if "%SKIP_BUILD%"=="false" (
     echo Checking Docker service status...
     docker info >nul 2>&1
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo ERROR: Docker service is not running or not accessible.
         echo Please start Docker Desktop and ensure Docker service is running.
         exit /b 1
@@ -93,6 +93,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest ^
+        --set-env-vars=TELEGRAM_ADMIN_ID=98336105 ^
         --max-retries=0 ^
         --parallelism=1 ^
         --task-timeout=3600
@@ -120,7 +121,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest ^
-        --set-env-vars=USE_WEBHOOK=true ^
+        --set-env-vars=USE_WEBHOOK=true,TELEGRAM_ADMIN_ID=98336105 ^
         --platform managed ^
         --allow-unauthenticated ^
         --port 8080 ^
