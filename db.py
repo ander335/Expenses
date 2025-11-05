@@ -56,6 +56,22 @@ class Position(Base):
     price: Mapped[float] = mapped_column(Float, nullable=False)
     receipt: Mapped["Receipt"] = relationship("Receipt", back_populates="positions")
 
+@dataclass
+class Group(Base):
+    __tablename__ = "groups"
+    group_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    description: Mapped[str] = mapped_column(String, nullable=False)
+    members: Mapped[List["GroupMember"]] = relationship("GroupMember", back_populates="group", cascade="all, delete-orphan")
+
+@dataclass
+class GroupMember(Base):
+    __tablename__ = "group_members"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('users.user_id'), nullable=False)
+    group: Mapped["Group"] = relationship("Group", back_populates="members")
+    user: Mapped["User"] = relationship("User")
+
 from sqlalchemy.engine import Engine
 from sqlalchemy import event, inspect
 
@@ -210,11 +226,14 @@ def add_receipt(receipt: Receipt) -> int:
     return receipt_id
 
 def get_last_n_receipts(user_id: int, n: int) -> List[Receipt]:
-    """Get last N receipts for a user, ordered by date desc."""
+    """Get last N receipts for a user and their group members, ordered by date desc."""
     session = Session()
     try:
+        # Get all user IDs in the same group (including the user themselves)
+        group_user_ids = get_group_user_ids(user_id)
+        
         receipts = session.query(Receipt)\
-            .filter_by(user_id=user_id)\
+            .filter(Receipt.user_id.in_(group_user_ids))\
             .order_by(Receipt.receipt_id.desc())\
             .limit(n)\
             .all()
@@ -243,11 +262,14 @@ def delete_receipt(receipt_id: int, user_id: int) -> bool:
         session.close()
 
 def get_receipts_by_date(user_id: int, date_str: str) -> List[Receipt]:
-    """Get receipts for a specific date. Date format should be DD-MM-YYYY."""
+    """Get receipts for a specific date for user and their group members. Date format should be DD-MM-YYYY."""
     session = Session()
     try:
+        # Get all user IDs in the same group (including the user themselves)
+        group_user_ids = get_group_user_ids(user_id)
+        
         receipts = session.query(Receipt)\
-            .filter_by(user_id=user_id, date=date_str)\
+            .filter(Receipt.user_id.in_(group_user_ids), Receipt.date == date_str)\
             .order_by(Receipt.receipt_id.desc())\
             .all()
         return receipts
@@ -255,24 +277,27 @@ def get_receipts_by_date(user_id: int, date_str: str) -> List[Receipt]:
         session.close()
 
 def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
-    """Get monthly summary for last N months."""
+    """Get monthly summary for last N months including group members."""
     from sqlalchemy import func, desc
     from datetime import datetime, timedelta
     
     session = Session()
     try:
+        # Get all user IDs in the same group (including the user themselves)
+        group_user_ids = get_group_user_ids(user_id)
+        
         # Calculate date N months ago
         today = datetime.now()
         start_date = (today - timedelta(days=n_months * 30)).strftime('%d-%m-%Y')
         
-        # Query receipts grouped by month
+        # Query receipts grouped by month for all group members
         results = session.query(
             # Combine month and year from DD-MM-YYYY format
             func.substr(Receipt.date, 4, 7).label('month'),  # Extract MM-YYYY from DD-MM-YYYY
             func.sum(Receipt.total_amount).label('total'),
             func.count(Receipt.receipt_id).label('count')
         ).filter(
-            Receipt.user_id == user_id,
+            Receipt.user_id.in_(group_user_ids),
             Receipt.date.isnot(None)  # Exclude records with NULL dates
         ).group_by(
             func.substr(Receipt.date, 4, 7)  # Group by MM-YYYY
@@ -293,3 +318,186 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
         ]
     finally:
         session.close()
+
+# Group management functions
+
+def create_group(description: str) -> int:
+    """Create a new group and return its ID."""
+    session = Session()
+    try:
+        group = Group(description=description)
+        session.add(group)
+        session.commit()
+        group_id = group.group_id
+        logger.info(f"Group {group_id} created with description: {description}")
+        return group_id
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def add_user_to_group(user_id: int, group_id: int) -> bool:
+    """Add a user to a group. Returns True if successful, False if already in group."""
+    session = Session()
+    try:
+        # Check if user is already in the group
+        existing = session.query(GroupMember).filter_by(
+            user_id=user_id, group_id=group_id
+        ).first()
+        if existing:
+            return False
+        
+        # Add user to group
+        member = GroupMember(user_id=user_id, group_id=group_id)
+        session.add(member)
+        session.commit()
+        logger.info(f"User {user_id} added to group {group_id}")
+        return True
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def remove_user_from_group(user_id: int, group_id: int) -> bool:
+    """Remove a user from a group. Returns True if successful, False if not in group."""
+    session = Session()
+    try:
+        member = session.query(GroupMember).filter_by(
+            user_id=user_id, group_id=group_id
+        ).first()
+        if not member:
+            return False
+        
+        session.delete(member)
+        session.commit()
+        logger.info(f"User {user_id} removed from group {group_id}")
+        return True
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def get_user_group(user_id: int) -> Optional[Group]:
+    """Get the group that a user belongs to. Assumes user can only be in one group."""
+    session = Session()
+    try:
+        member = session.query(GroupMember).filter_by(user_id=user_id).first()
+        if not member:
+            return None
+        
+        group = session.query(Group).filter_by(group_id=member.group_id).first()
+        return group
+    finally:
+        session.close()
+
+def get_group_members(group_id: int) -> List[User]:
+    """Get all users in a group."""
+    session = Session()
+    try:
+        members = session.query(User).join(GroupMember).filter(
+            GroupMember.group_id == group_id
+        ).all()
+        return members
+    finally:
+        session.close()
+
+def get_all_groups() -> List[Group]:
+    """Get all groups."""
+    session = Session()
+    try:
+        groups = session.query(Group).all()
+        return groups
+    finally:
+        session.close()
+
+def delete_group(group_id: int) -> bool:
+    """Delete a group and all its memberships. Returns True if successful."""
+    session = Session()
+    try:
+        group = session.query(Group).filter_by(group_id=group_id).first()
+        if not group:
+            return False
+        
+        session.delete(group)  # This will cascade delete group members
+        session.commit()
+        logger.info(f"Group {group_id} deleted")
+        return True
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def get_group_user_ids(user_id: int) -> List[int]:
+    """Get all user IDs in the same group as the given user, including the user themselves."""
+    session = Session()
+    try:
+        # Get the group the user belongs to
+        user_group = session.query(GroupMember).filter_by(user_id=user_id).first()
+        if not user_group:
+            # User is not in any group, return only themselves
+            return [user_id]
+        
+        # Get all users in the same group
+        group_user_ids = session.query(GroupMember.user_id).filter_by(
+            group_id=user_group.group_id
+        ).all()
+        
+        return [uid[0] for uid in group_user_ids]
+    finally:
+        session.close()
+
+def ensure_default_group():
+    """Ensure the default 'Servants of Shafran' group exists with specified users."""
+    try:
+        # Check if "Servants of Shafran" group already exists
+        session = Session()
+        try:
+            existing_group = session.query(Group).filter_by(description="Servants of Shafran").first()
+            if existing_group:
+                logger.info(f"Default group 'Servants of Shafran' already exists with ID: {existing_group.group_id}")
+                group_id = existing_group.group_id
+            else:
+                # Create the group
+                group_id = create_group("Servants of Shafran")
+                logger.info(f"Created default group 'Servants of Shafran' with ID: {group_id}")
+        finally:
+            session.close()
+        
+        # Ensure both users are in the group
+        target_users = [98336105, 235783980]
+        
+        for user_id in target_users:
+            try:
+                # Check if user is already in the group
+                session = Session()
+                try:
+                    existing_member = session.query(GroupMember).filter_by(
+                        user_id=user_id, group_id=group_id
+                    ).first()
+                    
+                    if not existing_member:
+                        # Add user to group
+                        success = add_user_to_group(user_id, group_id)
+                        if success:
+                            logger.info(f"Added user {user_id} to 'Servants of Shafran' group")
+                        else:
+                            logger.warning(f"Failed to add user {user_id} to 'Servants of Shafran' group")
+                    else:
+                        logger.info(f"User {user_id} already in 'Servants of Shafran' group")
+                finally:
+                    session.close()
+                    
+            except Exception as e:
+                logger.error(f"Error adding user {user_id} to default group: {e}")
+        
+        logger.info("Default group setup completed")
+        
+    except Exception as e:
+        logger.error(f"Error setting up default group: {e}")
+
+# Ensure default group exists after all functions are defined
+ensure_default_group()

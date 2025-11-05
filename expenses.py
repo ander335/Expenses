@@ -18,7 +18,9 @@ from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
     delete_receipt, get_monthly_summary, get_receipts_by_date,
-    get_user, create_user_if_missing, set_user_authorized, set_user_approval_requested
+    get_user, create_user_if_missing, set_user_authorized, set_user_approval_requested,
+    create_group, add_user_to_group, remove_user_from_group, get_user_group,
+    get_group_members, get_all_groups, delete_group
 )
 from parse import parse_receipt_from_gemini
 from gemini import parse_receipt_image, AIServiceMalformedJSONError
@@ -80,11 +82,14 @@ HELP_TEXT = (
     "• Send me a voice message describing your purchase to add it\n"
     "• /add TEXT - add a receipt from a text description\n"
     "• Add a caption to your photo/voice to override/correct any details\n"
-    "• /list N - show last N expenses\n"
+    "• /list N - show last N expenses (includes group members if you're in a group)\n"
     "• /date - open date picker OR /date DD.MM(.YYYY) for specific date\n"
     "• /delete ID - delete receipt with ID\n"
-    "• /summary N - show expenses summary for last N months\n"
+    "• /summary N - show expenses summary for last N months (includes group)\n"
     "• /flush - upload database to cloud storage\n"
+    "• /group - show current group info\n"
+    "• /creategroup DESCRIPTION - create a new group (admin only)\n"
+    "• /leavegroup - leave your current group\n"
     "\nExamples:\n"
     "- Send /list 5 to see last 5 receipts\n"
     "- Send /date to open interactive date picker\n"
@@ -95,7 +100,10 @@ HELP_TEXT = (
     "- Send a voice message saying \"I bought groceries for 25 euros at Tesco yesterday\"\n"
     "- Send a photo with caption \"Convert euros to CZK using exchange rate from purchase date\"\n"
     "- Send a photo with caption \"Convert to USD\" for currency conversion\n"
-    "- Send /flush to backup database to cloud"
+    "- Send /flush to backup database to cloud\n"
+    "- Send /creategroup \"Family Expenses\" to create a group\n"
+    "\n📊 Note: When in a group, receipts from all group members are included in lists, summaries, and date searches.\n"
+    "🔒 Security: Group membership is managed by admin only to protect expense privacy."
 )
 
 def get_persistent_keyboard():
@@ -108,14 +116,22 @@ def get_persistent_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def format_receipts_list(receipts: list, title: str) -> str:
-    """Format a list of receipts for display with a title."""
+def format_receipts_list(receipts: list, title: str, requesting_user_id: int = None) -> str:
+    """Format a list of receipts for display with a title, showing user names for group receipts."""
     if not receipts:
         return "No receipts found."
     
     text = f"{title}:\n\n"
     for r in receipts:
-        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}\n"
+        # Show user name if receipt belongs to someone else in the group
+        user_info = ""
+        if requesting_user_id and r.user_id != requesting_user_id:
+            # Get user name from database
+            from db import get_user
+            receipt_owner = get_user(r.user_id)
+            user_info = f" ({receipt_owner.name if receipt_owner else f'User {r.user_id}'})"
+        
+        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}{user_info}\n"
     
     return text
 
@@ -299,7 +315,7 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     receipts = get_last_n_receipts(update.effective_user.id, n)
-    formatted_text = format_receipts_list(receipts, f"Last {n} receipts")
+    formatted_text = format_receipts_list(receipts, f"Last {n} receipts", update.effective_user.id)
     
     await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
 
@@ -358,7 +374,7 @@ async def show_receipts_by_date(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info(f"Searching receipts for date {formatted_date} for user {user.id}")
             
             receipts = get_receipts_by_date(update.effective_user.id, formatted_date)
-            formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}")
+            formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}", update.effective_user.id)
             
             await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
             
@@ -984,7 +1000,7 @@ async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT
         
         # Get receipts for the selected date
         receipts = get_receipts_by_date(user_id, formatted_date)
-        formatted_text = format_receipts_list(receipts, f"Receipts for {display_date}")
+        formatted_text = format_receipts_list(receipts, f"Receipts for {display_date}", user_id)
         
         await query.edit_message_text(formatted_text, reply_markup=get_persistent_keyboard())
     
@@ -1193,6 +1209,139 @@ async def backup_task(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in backup task: {str(e)}")
 
+# Group management commands
+
+async def show_group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current group information for the user."""
+    user = update.effective_user
+    logger.info(f"Group info command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update, context):
+        return
+    
+    try:
+        user_group = get_user_group(update.effective_user.id)
+        if not user_group:
+            await update.message.reply_text(
+                "You are not currently in any group.\n\n"
+                "To join a group, use /joingroup GROUP_ID\n"
+                "To create a new group (admin only), use /creategroup DESCRIPTION",
+                reply_markup=get_persistent_keyboard()
+            )
+            return
+        
+        # Get group members
+        members = get_group_members(user_group.group_id)
+        member_names = [f"• {member.name} (ID: {member.user_id})" for member in members]
+        
+        group_text = (
+            f"📊 Your Group: {user_group.description}\n"
+            f"Group ID: {user_group.group_id}\n\n"
+            f"Members ({len(members)}):\n"
+            + "\n".join(member_names) +
+            "\n\n💡 All receipts from group members are included in your lists, summaries, and searches."
+        )
+        
+        await update.message.reply_text(group_text, reply_markup=get_persistent_keyboard())
+        
+    except Exception as e:
+        logger.error(f"Error showing group info for user {update.effective_user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to get group information: {str(e)}", reply_markup=get_persistent_keyboard())
+
+async def create_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create a new group (admin only)."""
+    user = update.effective_user
+    logger.info(f"Create group command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update, context):
+        return
+    
+    # Check if user is admin
+    if user.id != get_admin_user_id():
+        await update.message.reply_text("❌ Only the admin can create groups.", reply_markup=get_persistent_keyboard())
+        return
+    
+    # Extract the description after /creategroup
+    description = " ".join(context.args) if context.args else ""
+    if not description:
+        await update.message.reply_text(
+            "Please provide a group description after /creategroup. Example: /creategroup Family Expenses",
+            reply_markup=get_persistent_keyboard()
+        )
+        return
+    
+    try:
+        group_id = create_group(description)
+        await update.message.reply_text(
+            f"✅ Group created successfully!\n\n"
+            f"Group ID: {group_id}\n"
+            f"Description: {description}\n\n"
+            f"Share the Group ID {group_id} with others so they can join using /joingroup {group_id}",
+            reply_markup=get_persistent_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating group for user {user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to create group: {str(e)}", reply_markup=get_persistent_keyboard())
+
+async def join_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Join a group.
+    
+    SECURITY WARNING: This function is currently disabled because it presents a security risk.
+    Anyone who discovers a group ID can join and access all group members' expense data.
+    Group membership should be managed by the admin only to protect privacy.
+    
+    To re-enable, uncomment the handler in main() and implement proper authorization:
+    - Require admin approval for group joins
+    - Or implement invite codes/links
+    - Or restrict to pre-authorized users only
+    """
+    user = update.effective_user
+    logger.warning(f"SECURITY: Disabled join group command attempted by user {user.full_name} (ID: {user.id})")
+    
+    await update.message.reply_text(
+        "🔒 Group joining is currently disabled for security reasons.\n\n"
+        "Group membership is managed by the admin to protect expense privacy.\n"
+        "Contact the admin if you need to be added to a group.",
+        reply_markup=get_persistent_keyboard()
+    )
+
+async def leave_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Leave current group."""
+    user = update.effective_user
+    logger.info(f"Leave group command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update, context):
+        return
+    
+    try:
+        # Check if user is in a group
+        current_group = get_user_group(update.effective_user.id)
+        if not current_group:
+            await update.message.reply_text(
+                "❌ You are not currently in any group.",
+                reply_markup=get_persistent_keyboard()
+            )
+            return
+        
+        # Remove user from group
+        success = remove_user_from_group(update.effective_user.id, current_group.group_id)
+        if success:
+            await update.message.reply_text(
+                f"✅ Successfully left group '{current_group.description}' (ID: {current_group.group_id}).\n\n"
+                f"You will now only see your own receipts in lists and summaries.",
+                reply_markup=get_persistent_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Error leaving group.",
+                reply_markup=get_persistent_keyboard()
+            )
+        
+    except Exception as e:
+        logger.error(f"Error leaving group for user {user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"❌ Failed to leave group: {str(e)}", reply_markup=get_persistent_keyboard())
+
 async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
     """Background task for periodic cleanup."""
     try:
@@ -1376,6 +1525,10 @@ def main():
     application.add_handler(CommandHandler('delete', delete_receipt_cmd))
     application.add_handler(CommandHandler('summary', show_summary))
     application.add_handler(CommandHandler('flush', flush_database))
+    application.add_handler(CommandHandler('group', show_group_info))
+    application.add_handler(CommandHandler('creategroup', create_group_cmd))
+    # application.add_handler(CommandHandler('joingroup', join_group_cmd))  # SECURITY: Disabled - allows unauthorized access to group expenses
+    application.add_handler(CommandHandler('leavegroup', leave_group_cmd))
     application.add_handler(conv_handler)
     
     # Handler for persistent buttons
