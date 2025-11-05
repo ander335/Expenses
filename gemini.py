@@ -59,7 +59,10 @@ USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: If the user provides additional com
 
 User comments: "{user_comment}"""
 
-RECEIPT_PARSE_PROMPT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
+RECEIPT_PARSE_PROMPT_NO_USER_INPUT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
+{receipt_structure}"""
+
+RECEIPT_PARSE_PROMPT_WITH_USER_INPUT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}
 
 DATE HANDLING INSTRUCTIONS:
@@ -319,12 +322,18 @@ def parse_receipt_image(image_path, user_comment=None):
     current_date = datetime.now().strftime("%d-%m-%Y")
     logger.debug(f"Using current date: {current_date}")
 
-    # Always use the single prompt; insert the (possibly empty) user comment and current date
-    prompt = RECEIPT_PARSE_PROMPT.format(
-        receipt_structure=RECEIPT_JSON_STRUCTURE,
-        user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment_text),
-        current_date=current_date
-    )
+    # Select appropriate prompt template based on whether user input is provided
+    if user_comment_text:
+        prompt = RECEIPT_PARSE_PROMPT_WITH_USER_INPUT.format(
+            receipt_structure=RECEIPT_JSON_STRUCTURE,
+            user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment_text),
+            current_date=current_date
+        )
+    else:
+        prompt = RECEIPT_PARSE_PROMPT_NO_USER_INPUT.format(
+            receipt_structure=RECEIPT_JSON_STRUCTURE,
+            current_date=current_date
+        )
     
     # Read image and encode as base64
     with open(image_path, "rb") as img_file:
