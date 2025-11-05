@@ -15,7 +15,7 @@ import sys
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
-    delete_receipt, get_monthly_summary,
+    delete_receipt, get_monthly_summary, get_receipts_by_date,
     get_user, create_user_if_missing, set_user_authorized, set_user_approval_requested
 )
 from parse import parse_receipt_from_gemini
@@ -79,11 +79,14 @@ HELP_TEXT = (
     "• /add TEXT - add a receipt from a text description\n"
     "• Add a caption to your photo/voice to override/correct any details\n"
     "• /list N - show last N expenses\n"
+    "• /date DD.MM or DD.MM.YYYY - show receipts from specific date\n"
     "• /delete ID - delete receipt with ID\n"
     "• /summary N - show expenses summary for last N months\n"
     "• /flush - upload database to cloud storage\n"
     "\nExamples:\n"
     "- Send /list 5 to see last 5 receipts\n"
+    "- Send /date 25.11 to see receipts from November 25th this year\n"
+    "- Send /date 5.5.2023 to see receipts from May 5th, 2023\n"
     "- Send /summary 3 to see expenses for last 3 months\n"
     "- Send a photo with caption \"Date: 25-10-2024, Total: 15.50\" to correct details\n"
     "- Send a voice message saying \"I bought groceries for 25 euros at Tesco yesterday\"\n"
@@ -101,6 +104,17 @@ def get_persistent_keyboard():
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def format_receipts_list(receipts: list, title: str) -> str:
+    """Format a list of receipts for display with a title."""
+    if not receipts:
+        return "No receipts found."
+    
+    text = f"{title}:\n\n"
+    for r in receipts:
+        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}\n"
+    
+    return text
 
 async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Enhanced DB-backed access control with rate limiting and session management."""
@@ -237,15 +251,9 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     receipts = get_last_n_receipts(update.effective_user.id, n)
-    if not receipts:
-        await update.message.reply_text("No receipts found.", reply_markup=get_persistent_keyboard())
-        return
-
-    text = "Last receipts:\n\n"
-    for r in receipts:
-        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}\n"
+    formatted_text = format_receipts_list(receipts, f"Last {n} receipts")
     
-    await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
+    await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
 
 async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -269,6 +277,61 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"Receipt {receipt_id} not found or not owned by you.", reply_markup=get_persistent_keyboard())
     except Exception as e:
         await update.message.reply_text(f"Failed to delete receipt: {e}", reply_markup=get_persistent_keyboard())
+
+async def show_receipts_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"Date command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update, context):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Please specify a date: /date DD.MM or /date DD.MM.YYYY\n\n"
+            "Examples:\n"
+            "• /date 25.11 - receipts from November 25th this year\n"
+            "• /date 5.5.2023 - receipts from May 5th, 2023",
+            reply_markup=get_persistent_keyboard()
+        )
+        return
+    
+    date_input = context.args[0]
+    
+    try:
+        # Parse the date input and convert to DD-MM-YYYY format
+        from datetime import datetime
+        
+        if date_input.count('.') == 1:
+            # Format: DD.MM (current year)
+            day, month = date_input.split('.')
+            current_year = datetime.now().year
+            formatted_date = f"{int(day):02d}-{int(month):02d}-{current_year}"
+        elif date_input.count('.') == 2:
+            # Format: DD.MM.YYYY
+            day, month, year = date_input.split('.')
+            formatted_date = f"{int(day):02d}-{int(month):02d}-{int(year)}"
+        else:
+            raise ValueError("Invalid date format")
+        
+        # Validate the date
+        datetime.strptime(formatted_date, '%d-%m-%Y')
+        
+        logger.info(f"Searching receipts for date {formatted_date} for user {user.id}")
+        
+    except ValueError:
+        logger.warning(f"Invalid date format from user {user.id}: {date_input}")
+        await update.message.reply_text(
+            "❌ Invalid date format. Please use:\n"
+            "• DD.MM for current year (e.g., 25.11)\n"
+            "• DD.MM.YYYY for specific year (e.g., 5.5.2023)",
+            reply_markup=get_persistent_keyboard()
+        )
+        return
+
+    receipts = get_receipts_by_date(update.effective_user.id, formatted_date)
+    formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}")
+    
+    await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
 
 async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1210,6 +1273,7 @@ def main():
     
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('list', list_receipts))
+    application.add_handler(CommandHandler('date', show_receipts_by_date))
     application.add_handler(CommandHandler('delete', delete_receipt_cmd))
     application.add_handler(CommandHandler('summary', show_summary))
     application.add_handler(CommandHandler('flush', flush_database))

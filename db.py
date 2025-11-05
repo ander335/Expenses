@@ -242,6 +242,18 @@ def delete_receipt(receipt_id: int, user_id: int) -> bool:
     finally:
         session.close()
 
+def get_receipts_by_date(user_id: int, date_str: str) -> List[Receipt]:
+    """Get receipts for a specific date. Date format should be DD-MM-YYYY."""
+    session = Session()
+    try:
+        receipts = session.query(Receipt)\
+            .filter_by(user_id=user_id, date=date_str)\
+            .order_by(Receipt.receipt_id.desc())\
+            .all()
+        return receipts
+    finally:
+        session.close()
+
 def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
     """Get monthly summary for last N months."""
     from sqlalchemy import func, desc
