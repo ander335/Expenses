@@ -1,7 +1,7 @@
 # GitHub Copilot Suggestions for Expenses Bot
 
 ## Instructions
-- To deploy bot in cloud use .\cloud_deploy.bat service
+- To deploy bot in cloud use `.\cloud_deploy.bat service` command.
 - Do not run bot locally, it is designed to run in cloud environment only.
 
 ## Writing code

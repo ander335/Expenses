@@ -102,7 +102,7 @@ def get_persistent_keyboard():
     """Create persistent buttons that are always available."""
     keyboard = [
         [
-            InlineKeyboardButton("💾 Flush Database", callback_data="persistent_flush"),
+            InlineKeyboardButton("📅 Date Search", callback_data="persistent_calendar"),
             InlineKeyboardButton("📊 Summary", callback_data="persistent_summary")
         ]
     ]
@@ -1017,26 +1017,18 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
             await query.edit_message_text("Sorry, you are not authorized to use this bot.")
             return
     
-    if query.data == "persistent_flush":
-        logger.info(f"Persistent flush button clicked by user {user.full_name} (ID: {user_id})")
+    if query.data == "persistent_calendar":
+        logger.info(f"Persistent calendar button clicked by user {user.full_name} (ID: {user_id})")
         
-        try:
-            await query.edit_message_text("Uploading database to cloud storage...")
-            logger.info(f"Starting database upload for user {user_id}")
-            
-            # Force upload the database to Google Cloud Storage
-            success = cloud_storage.check_and_upload_db()
-            
-            if success:
-                logger.info(f"Database successfully uploaded to GCS by user {user_id}")
-                await query.edit_message_text("✅ Database successfully uploaded to Google Cloud Storage!", reply_markup=get_persistent_keyboard())
-            else:
-                logger.warning(f"Database upload failed or no changes detected for user {user_id}")
-                await query.edit_message_text("⚠️ Database upload failed or no changes were detected.", reply_markup=get_persistent_keyboard())
-                
-        except Exception as e:
-            logger.error(f"Error during database flush for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"❌ Failed to upload database: {str(e)}", reply_markup=get_persistent_keyboard())
+        # Show date picker
+        current_date = datetime.now()
+        calendar_keyboard = create_calendar_keyboard(current_date.year, current_date.month)
+        
+        await query.edit_message_text(
+            "📅 Select a date to view receipts:\n\n"
+            "💡 Tip: You can also type /date DD.MM or /date DD.MM.YYYY for quick access",
+            reply_markup=calendar_keyboard
+        )
     
     elif query.data == "persistent_summary":
         logger.info(f"Persistent summary button clicked by user {user.full_name} (ID: {user_id})")
