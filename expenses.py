@@ -12,6 +12,8 @@ import asyncio
 import requests
 import signal
 import sys
+import calendar
+from datetime import datetime, timedelta
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
     add_receipt, get_or_create_user, User, get_last_n_receipts,
@@ -79,12 +81,13 @@ HELP_TEXT = (
     "• /add TEXT - add a receipt from a text description\n"
     "• Add a caption to your photo/voice to override/correct any details\n"
     "• /list N - show last N expenses\n"
-    "• /date DD.MM or DD.MM.YYYY - show receipts from specific date\n"
+    "• /date - open date picker OR /date DD.MM(.YYYY) for specific date\n"
     "• /delete ID - delete receipt with ID\n"
     "• /summary N - show expenses summary for last N months\n"
     "• /flush - upload database to cloud storage\n"
     "\nExamples:\n"
     "- Send /list 5 to see last 5 receipts\n"
+    "- Send /date to open interactive date picker\n"
     "- Send /date 25.11 to see receipts from November 25th this year\n"
     "- Send /date 5.5.2023 to see receipts from May 5th, 2023\n"
     "- Send /summary 3 to see expenses for last 3 months\n"
@@ -115,6 +118,51 @@ def format_receipts_list(receipts: list, title: str) -> str:
         text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}\n"
     
     return text
+
+def create_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
+    """Create a calendar keyboard for date selection."""
+    # Calendar header with month/year and navigation
+    keyboard = []
+    
+    # Navigation row with previous/next month
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    next_month = month + 1 if month < 12 else 1
+    next_year = year if month < 12 else year + 1
+    
+    month_name = calendar.month_name[month]
+    keyboard.append([
+        InlineKeyboardButton("◀", callback_data=f"cal_nav_{prev_year}_{prev_month}"),
+        InlineKeyboardButton(f"{month_name} {year}", callback_data="cal_ignore"),
+        InlineKeyboardButton("▶", callback_data=f"cal_nav_{next_year}_{next_month}")
+    ])
+    
+    # Days of week header
+    keyboard.append([
+        InlineKeyboardButton("Mo", callback_data="cal_ignore"),
+        InlineKeyboardButton("Tu", callback_data="cal_ignore"),
+        InlineKeyboardButton("We", callback_data="cal_ignore"),
+        InlineKeyboardButton("Th", callback_data="cal_ignore"),
+        InlineKeyboardButton("Fr", callback_data="cal_ignore"),
+        InlineKeyboardButton("Sa", callback_data="cal_ignore"),
+        InlineKeyboardButton("Su", callback_data="cal_ignore")
+    ])
+    
+    # Calendar days
+    cal = calendar.monthcalendar(year, month)
+    for week in cal:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="cal_ignore"))
+            else:
+                row.append(InlineKeyboardButton(str(day), callback_data=f"cal_date_{year}_{month:02d}_{day:02d}"))
+        keyboard.append(row)
+    
+    # Close button
+    keyboard.append([InlineKeyboardButton("❌ Close", callback_data="cal_close")])
+    
+    return InlineKeyboardMarkup(keyboard)
 
 async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Enhanced DB-backed access control with rate limiting and session management."""
@@ -285,53 +333,54 @@ async def show_receipts_by_date(update: Update, context: ContextTypes.DEFAULT_TY
     if not await check_user_access(update, context):
         return
     
-    if not context.args:
+    # Check if user provided a date argument
+    if context.args:
+        # Manual date input (original functionality)
+        date_input = context.args[0]
+        
+        try:
+            # Parse the date input and convert to DD-MM-YYYY format
+            if date_input.count('.') == 1:
+                # Format: DD.MM (current year)
+                day, month = date_input.split('.')
+                current_year = datetime.now().year
+                formatted_date = f"{int(day):02d}-{int(month):02d}-{current_year}"
+            elif date_input.count('.') == 2:
+                # Format: DD.MM.YYYY
+                day, month, year = date_input.split('.')
+                formatted_date = f"{int(day):02d}-{int(month):02d}-{int(year)}"
+            else:
+                raise ValueError("Invalid date format")
+            
+            # Validate the date
+            datetime.strptime(formatted_date, '%d-%m-%Y')
+            
+            logger.info(f"Searching receipts for date {formatted_date} for user {user.id}")
+            
+            receipts = get_receipts_by_date(update.effective_user.id, formatted_date)
+            formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}")
+            
+            await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
+            
+        except ValueError:
+            logger.warning(f"Invalid date format from user {user.id}: {date_input}")
+            await update.message.reply_text(
+                "❌ Invalid date format. Please use:\n"
+                "• DD.MM for current year (e.g., 25.11)\n"
+                "• DD.MM.YYYY for specific year (e.g., 5.5.2023)\n\n"
+                "Or use /date without arguments to open the date picker.",
+                reply_markup=get_persistent_keyboard()
+            )
+    else:
+        # Show date picker (new functionality)
+        current_date = datetime.now()
+        calendar_keyboard = create_calendar_keyboard(current_date.year, current_date.month)
+        
         await update.message.reply_text(
-            "Please specify a date: /date DD.MM or /date DD.MM.YYYY\n\n"
-            "Examples:\n"
-            "• /date 25.11 - receipts from November 25th this year\n"
-            "• /date 5.5.2023 - receipts from May 5th, 2023",
-            reply_markup=get_persistent_keyboard()
+            "📅 Select a date to view receipts:\n\n"
+            "💡 Tip: You can also type /date DD.MM or /date DD.MM.YYYY for quick access",
+            reply_markup=calendar_keyboard
         )
-        return
-    
-    date_input = context.args[0]
-    
-    try:
-        # Parse the date input and convert to DD-MM-YYYY format
-        from datetime import datetime
-        
-        if date_input.count('.') == 1:
-            # Format: DD.MM (current year)
-            day, month = date_input.split('.')
-            current_year = datetime.now().year
-            formatted_date = f"{int(day):02d}-{int(month):02d}-{current_year}"
-        elif date_input.count('.') == 2:
-            # Format: DD.MM.YYYY
-            day, month, year = date_input.split('.')
-            formatted_date = f"{int(day):02d}-{int(month):02d}-{int(year)}"
-        else:
-            raise ValueError("Invalid date format")
-        
-        # Validate the date
-        datetime.strptime(formatted_date, '%d-%m-%Y')
-        
-        logger.info(f"Searching receipts for date {formatted_date} for user {user.id}")
-        
-    except ValueError:
-        logger.warning(f"Invalid date format from user {user.id}: {date_input}")
-        await update.message.reply_text(
-            "❌ Invalid date format. Please use:\n"
-            "• DD.MM for current year (e.g., 25.11)\n"
-            "• DD.MM.YYYY for specific year (e.g., 5.5.2023)",
-            reply_markup=get_persistent_keyboard()
-        )
-        return
-
-    receipts = get_receipts_by_date(update.effective_user.id, formatted_date)
-    formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}")
-    
-    await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
 
 async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -889,6 +938,64 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
         file_handler.cleanup_temp_file(voice_file_path)
 
 
+async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle calendar date picker interactions."""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    user_id = user.id
+    
+    # Check authorization first
+    if user_id == get_admin_user_id():
+        # Admin is always authorized
+        pass
+    else:
+        # Check database authorization for non-admin users
+        db_user = get_user(user_id)
+        if not db_user or not db_user.is_authorized:
+            logger.warning(f"Unauthorized calendar access attempt from user {user.full_name} (ID: {user_id})")
+            await query.edit_message_text("Sorry, you are not authorized to use this bot.")
+            return
+    
+    callback_data = query.data
+    
+    if callback_data.startswith("cal_nav_"):
+        # Navigation to different month
+        _, _, year_str, month_str = callback_data.split("_")
+        year, month = int(year_str), int(month_str)
+        
+        calendar_keyboard = create_calendar_keyboard(year, month)
+        await query.edit_message_text(
+            "📅 Select a date to view receipts:",
+            reply_markup=calendar_keyboard
+        )
+    
+    elif callback_data.startswith("cal_date_"):
+        # Date selected
+        _, _, year_str, month_str, day_str = callback_data.split("_")
+        year, month, day = int(year_str), int(month_str), int(day_str)
+        
+        # Format date as DD-MM-YYYY for database query
+        formatted_date = f"{day:02d}-{month:02d}-{year}"
+        display_date = f"{day}.{month}.{year}"
+        
+        logger.info(f"Calendar date selected: {formatted_date} by user {user_id}")
+        
+        # Get receipts for the selected date
+        receipts = get_receipts_by_date(user_id, formatted_date)
+        formatted_text = format_receipts_list(receipts, f"Receipts for {display_date}")
+        
+        await query.edit_message_text(formatted_text, reply_markup=get_persistent_keyboard())
+    
+    elif callback_data == "cal_close":
+        # Close calendar
+        await query.edit_message_text("📅 Calendar closed.", reply_markup=get_persistent_keyboard())
+    
+    elif callback_data == "cal_ignore":
+        # Ignore clicks on header/day labels
+        pass
+
 async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle clicks on persistent buttons."""
     query = update.callback_query
@@ -1281,6 +1388,8 @@ def main():
     
     # Handler for persistent buttons
     application.add_handler(CallbackQueryHandler(handle_persistent_buttons, pattern="^persistent_"))
+    # Handler for calendar interactions
+    application.add_handler(CallbackQueryHandler(handle_calendar_callback, pattern="^cal_"))
     # Handler for admin approvals
     application.add_handler(CallbackQueryHandler(handle_user_auth_decision, pattern=r"^auth_(approve|reject)_\d+$"))
     
