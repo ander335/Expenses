@@ -1,79 +1,51 @@
-# Simple Telegram bot that listens and responds
+# Simple Telegram bot that listens and responds - Main entry point
 
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler, CallbackQueryHandler
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from auth_data import BOT_TOKEN, TELEGRAM_ADMIN_ID
 
 import os
-import json
-from logger_config import logger
-import asyncio
 import requests
 import signal
 import sys
-import calendar
-from datetime import datetime, timedelta
+from logger_config import logger
 from db import cloud_storage  # Import the cloud storage instance
 from db import (
-    add_receipt, get_or_create_user, User, get_last_n_receipts,
-    delete_receipt, get_monthly_summary, get_receipts_by_date,
-    get_user, create_user_if_missing, set_user_authorized, set_user_approval_requested,
-    create_group, add_user_to_group, remove_user_from_group, get_user_group,
-    get_group_members, get_all_groups, delete_group
+    get_or_create_user, User, get_user, create_user_if_missing, 
+    set_user_authorized, set_user_approval_requested
 )
-from parse import parse_receipt_from_gemini
-from gemini import parse_receipt_image, AIServiceMalformedJSONError
 from security_utils import (
     SecurityException, RateLimiter, SecureFileHandler, InputValidator, SessionManager,
-    rate_limiter, file_handler, session_manager,
-    ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, MAX_USERS
+    rate_limiter, file_handler, session_manager, MAX_USERS
+)
+
+# Import the new modular components
+from expenses_create import (
+    handle_photo, handle_voice_receipt, handle_approval, handle_user_comment, 
+    handle_voice_comment, add_text_receipt, AWAITING_APPROVAL
+)
+from expenses_view import (
+    list_receipts, delete_receipt_cmd, show_receipts_by_date, show_summary,
+    handle_calendar_callback, handle_persistent_buttons
+)
+from groups import (
+    show_group_info, create_group_cmd, join_group_cmd, leave_group_cmd,
+    add_user_to_group_admin, remove_user_from_group_admin, list_all_groups_admin, delete_group_admin
 )
 
 def get_admin_user_id() -> int:
     # TELEGRAM_ADMIN_ID is guaranteed valid by auth_data import
     return TELEGRAM_ADMIN_ID
 
-async def handle_ai_service_error(update: Update, e: Exception, operation_type: str = "receipt") -> None:
-    """
-    Helper function to handle AI service errors with specific messaging for malformed JSON.
-    
-    Args:
-        update: Telegram update object
-        e: The exception that occurred
-        operation_type: Type of operation (receipt, voice, text, changes, voice_changes)
-    """
-    if isinstance(e, AIServiceMalformedJSONError):
-        if operation_type == "receipt":
-            message = "🤖 The AI service returned incorrectly formatted data. Please try uploading your receipt photo one more time - this usually resolves the issue."
-        elif operation_type == "voice":
-            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your voice message one more time - this usually resolves the issue."
-        elif operation_type == "text":
-            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your text description one more time - this usually resolves the issue."
-        elif operation_type == "changes":
-            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your changes one more time - this usually resolves the issue."
-        elif operation_type == "voice_changes":
-            message = "🤖 The AI service returned incorrectly formatted data. Please try sending your voice message one more time - this usually resolves the issue."
-        else:
-            message = "🤖 The AI service returned incorrectly formatted data. Please try again - this usually resolves the issue."
-        
-        await update.message.reply_text(message)
-    else:
-        # Default error messages for other types of errors
-        if operation_type == "receipt":
-            await update.message.reply_text("❌ Failed to process receipt. Please try again with a clearer photo.")
-        elif operation_type == "voice":
-            await update.message.reply_text("❌ Failed to process voice receipt. Please try again or use a photo instead.")
-        elif operation_type == "text":
-            await update.message.reply_text("❌ Failed to process text receipt. Please try again.")
-        elif operation_type == "changes":
-            await update.message.reply_text("❌ Failed to process your changes. Please try again.")
-        elif operation_type == "voice_changes":
-            await update.message.reply_text("❌ Failed to process your voice message. Please try typing your changes instead.")
-        else:
-            await update.message.reply_text("❌ An error occurred. Please try again.")
-
-# Group admin support removed; single admin is used via TELEGRAM_ADMIN_ID.
+def get_persistent_keyboard():
+    """Create persistent buttons that are always available."""
+    keyboard = [
+        [
+            InlineKeyboardButton("📅 Date Search", callback_data="persistent_calendar"),
+            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # Common help text for the bot
 HELP_TEXT = (
@@ -90,6 +62,11 @@ HELP_TEXT = (
     "• /group - show current group info\n"
     "• /creategroup DESCRIPTION - create a new group (admin only)\n"
     "• /leavegroup - leave your current group\n"
+    "\nAdmin-only group management:\n"
+    "• /addusertogroup USER_ID GROUP_ID - add user to group\n"
+    "• /removeuserfromgroup USER_ID GROUP_ID - remove user from group\n"
+    "• /listallgroups - list all groups in the system\n"
+    "• /deletegroup GROUP_ID - delete a group\n"
     "\nExamples:\n"
     "- Send /list 5 to see last 5 receipts\n"
     "- Send /date to open interactive date picker\n"
@@ -105,80 +82,6 @@ HELP_TEXT = (
     "\n📊 Note: When in a group, receipts from all group members are included in lists, summaries, and date searches.\n"
     "🔒 Security: Group membership is managed by admin only to protect expense privacy."
 )
-
-def get_persistent_keyboard():
-    """Create persistent buttons that are always available."""
-    keyboard = [
-        [
-            InlineKeyboardButton("📅 Date Search", callback_data="persistent_calendar"),
-            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def format_receipts_list(receipts: list, title: str, requesting_user_id: int = None) -> str:
-    """Format a list of receipts for display with a title, showing user names for group receipts."""
-    if not receipts:
-        return "No receipts found."
-    
-    text = f"{title}:\n\n"
-    for r in receipts:
-        # Show user name if receipt belongs to someone else in the group
-        user_info = ""
-        if requesting_user_id and r.user_id != requesting_user_id:
-            # Get user name from database
-            from db import get_user
-            receipt_owner = get_user(r.user_id)
-            user_info = f" ({receipt_owner.name if receipt_owner else f'User {r.user_id}'})"
-        
-        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}{user_info}\n"
-    
-    return text
-
-def create_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
-    """Create a calendar keyboard for date selection."""
-    # Calendar header with month/year and navigation
-    keyboard = []
-    
-    # Navigation row with previous/next month
-    prev_month = month - 1 if month > 1 else 12
-    prev_year = year if month > 1 else year - 1
-    next_month = month + 1 if month < 12 else 1
-    next_year = year if month < 12 else year + 1
-    
-    month_name = calendar.month_name[month]
-    keyboard.append([
-        InlineKeyboardButton("◀", callback_data=f"cal_nav_{prev_year}_{prev_month}"),
-        InlineKeyboardButton(f"{month_name} {year}", callback_data="cal_ignore"),
-        InlineKeyboardButton("▶", callback_data=f"cal_nav_{next_year}_{next_month}")
-    ])
-    
-    # Days of week header
-    keyboard.append([
-        InlineKeyboardButton("Mo", callback_data="cal_ignore"),
-        InlineKeyboardButton("Tu", callback_data="cal_ignore"),
-        InlineKeyboardButton("We", callback_data="cal_ignore"),
-        InlineKeyboardButton("Th", callback_data="cal_ignore"),
-        InlineKeyboardButton("Fr", callback_data="cal_ignore"),
-        InlineKeyboardButton("Sa", callback_data="cal_ignore"),
-        InlineKeyboardButton("Su", callback_data="cal_ignore")
-    ])
-    
-    # Calendar days
-    cal = calendar.monthcalendar(year, month)
-    for week in cal:
-        row = []
-        for day in week:
-            if day == 0:
-                row.append(InlineKeyboardButton(" ", callback_data="cal_ignore"))
-            else:
-                row.append(InlineKeyboardButton(str(day), callback_data=f"cal_date_{year}_{month:02d}_{day:02d}"))
-        keyboard.append(row)
-    
-    # Close button
-    keyboard.append([InlineKeyboardButton("❌ Close", callback_data="cal_close")])
-    
-    return InlineKeyboardMarkup(keyboard)
 
 async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Enhanced DB-backed access control with rate limiting and session management."""
@@ -286,148 +189,16 @@ async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    logger.info(f"Start command received from user {user.full_name} (ID: {user.id})")
+    logger.info(f"[EXPENSES_MAIN] Start command received from user {user.full_name} (ID: {user.id})")
     
     if not await check_user_access(update, context):
+        logger.warning(f"[EXPENSES_MAIN] Access denied for start command from user {user.id}")
         return
     
     db_user = User(user_id=user.id, name=user.full_name)
     get_or_create_user(db_user)
     welcome_text = f'Hello {user.full_name}! I am your Expenses bot.\n\n{HELP_TEXT}'
     await update.message.reply_text(welcome_text, reply_markup=get_persistent_keyboard())
-
-
-async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    logger.info(f"List command received from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return
-    
-    try:
-        n = int(context.args[0]) if context.args else 5  # Default to last 5 receipts
-        logger.info(f"Listing last {n} receipts for user {user.id}")
-        if n <= 0:
-            raise ValueError("Number must be positive")
-    except (IndexError, ValueError):
-        logger.warning(f"Invalid list command argument from user {user.id}")
-        await update.message.reply_text("Please specify a positive number: /list N", reply_markup=get_persistent_keyboard())
-        return
-
-    receipts = get_last_n_receipts(update.effective_user.id, n)
-    formatted_text = format_receipts_list(receipts, f"Last {n} receipts", update.effective_user.id)
-    
-    await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
-
-async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    logger.info(f"Delete command received from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return
-    
-    try:
-        receipt_id = int(context.args[0])
-        logger.info(f"Attempting to delete receipt {receipt_id} for user {user.id}")
-    except (IndexError, ValueError):
-        logger.warning(f"Invalid delete command argument from user {user.id}")
-        await update.message.reply_text("Please specify a receipt ID: /delete ID", reply_markup=get_persistent_keyboard())
-        return
-
-    try:
-        if delete_receipt(receipt_id, update.effective_user.id):
-            await update.message.reply_text(f"Receipt {receipt_id} deleted successfully!", reply_markup=get_persistent_keyboard())
-        else:
-            await update.message.reply_text(f"Receipt {receipt_id} not found or not owned by you.", reply_markup=get_persistent_keyboard())
-    except Exception as e:
-        await update.message.reply_text(f"Failed to delete receipt: {e}", reply_markup=get_persistent_keyboard())
-
-async def show_receipts_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    logger.info(f"Date command received from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return
-    
-    # Check if user provided a date argument
-    if context.args:
-        # Manual date input (original functionality)
-        date_input = context.args[0]
-        
-        try:
-            # Parse the date input and convert to DD-MM-YYYY format
-            if date_input.count('.') == 1:
-                # Format: DD.MM (current year)
-                day, month = date_input.split('.')
-                current_year = datetime.now().year
-                formatted_date = f"{int(day):02d}-{int(month):02d}-{current_year}"
-            elif date_input.count('.') == 2:
-                # Format: DD.MM.YYYY
-                day, month, year = date_input.split('.')
-                formatted_date = f"{int(day):02d}-{int(month):02d}-{int(year)}"
-            else:
-                raise ValueError("Invalid date format")
-            
-            # Validate the date
-            datetime.strptime(formatted_date, '%d-%m-%Y')
-            
-            logger.info(f"Searching receipts for date {formatted_date} for user {user.id}")
-            
-            receipts = get_receipts_by_date(update.effective_user.id, formatted_date)
-            formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}", update.effective_user.id)
-            
-            await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
-            
-        except ValueError:
-            logger.warning(f"Invalid date format from user {user.id}: {date_input}")
-            await update.message.reply_text(
-                "❌ Invalid date format. Please use:\n"
-                "• DD.MM for current year (e.g., 25.11)\n"
-                "• DD.MM.YYYY for specific year (e.g., 5.5.2023)\n\n"
-                "Or use /date without arguments to open the date picker.",
-                reply_markup=get_persistent_keyboard()
-            )
-    else:
-        # Show date picker (new functionality)
-        current_date = datetime.now()
-        calendar_keyboard = create_calendar_keyboard(current_date.year, current_date.month)
-        
-        await update.message.reply_text(
-            "📅 Select a date to view receipts:\n\n"
-            "💡 Tip: You can also type /date DD.MM or /date DD.MM.YYYY for quick access",
-            reply_markup=calendar_keyboard
-        )
-
-async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    logger.info(f"Summary command received from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return
-    
-    try:
-        n = int(context.args[0]) if context.args else 3  # Default to last 3 months
-        logger.info(f"Generating {n} month summary for user {user.id}")
-        if n <= 0:
-            raise ValueError("Number must be positive")
-    except (IndexError, ValueError):
-        logger.warning(f"Invalid summary command argument from user {user.id}")
-        await update.message.reply_text("Please specify a positive number: /summary N", reply_markup=get_persistent_keyboard())
-        return
-
-    summary = get_monthly_summary(update.effective_user.id, n)
-    if not summary:
-        await update.message.reply_text("No data found for the specified period.", reply_markup=get_persistent_keyboard())
-        return
-
-    text = "Monthly summary:\n\n"
-    for month_data in summary:
-        text += (f"{month_data['month']}: "
-                f"{month_data['count']} receipts, "
-                f"total: {month_data['total']:.2f}\n")
-    
-    await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
-
 
 async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -454,635 +225,26 @@ async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error during database flush for user {user.id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"❌ Failed to upload database: {str(e)}", reply_markup=get_persistent_keyboard())
 
-
-# States for conversation handler
-AWAITING_APPROVAL = 1
-
-# Store temporary data
-receipt_data = {}
-
-import time
-
-# Import the new update function
-from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt
-
-async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFAULT_TYPE, *, voice_file_path: str, heard_prefix: str, next_hint: str) -> str:
-    """Shared helper: transcribe a voice file and immediately inform the user.
-
-    Args:
-        update: Telegram update
-        context: Telegram context
-        voice_file_path: Local path to the downloaded .ogg voice file
-        heard_prefix: Prefix for the immediate feedback line (e.g., "🎙️ I heard:" or "🎙️ Your voice comment:")
-        next_hint: Follow-up hint displayed on a new line to set expectations (e.g., "🛠️ Creating a receipt summary...")
-
-    Returns:
-        The transcribed text
-    """
-    logger.info(f"Starting transcription for file: {voice_file_path}")
-    transcribed_text = convert_voice_to_text(voice_file_path)
-    logger.info(f"Transcription result: {transcribed_text}")
-
-    # Inform user immediately; failure here shouldn't break the flow
-    immediate_message = f"{heard_prefix} \"{transcribed_text}\"\n\n{next_hint}" if next_hint else f"{heard_prefix} \"{transcribed_text}\""
+async def backup_task(context: ContextTypes.DEFAULT_TYPE):
+    """Background task to check and upload database changes."""
     try:
-        await update.message.reply_text(immediate_message)
-        logger.info("Sent immediate transcription feedback to user")
+        cloud_storage.check_and_upload_db()
+        logger.info("Backup task completed successfully")
     except Exception as e:
-        logger.warning(f"Failed to send immediate transcription message: {str(e)}")
+        logger.error(f"Error in backup task: {str(e)}")
 
-    return transcribed_text
-
-async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None):
-    """Send a preview of the parsed receipt with Approve/Reject buttons and store temp data."""
-    user_id = update.effective_user.id
-    # Store the parsed receipt object and original JSON
-    timestamp = str(int(time.time()))
-    receipt_data[user_id] = {
-        "parsed_receipt": parsed_receipt,
-        "original_json": original_json,
-        "user_comment": None,
-        "latest_timestamp": timestamp,
-        "latest_message_id": None
-    }
-
-    # Format the output for display
-    output_text = f"{preface}\n\n"
-    if user_text_line:
-        output_text += f"{user_text_line}\n\n"
-    if parsed_receipt.description:
-        output_text += f"💬 Description: {parsed_receipt.description}\n\n"
-    output_text += f"Merchant: {parsed_receipt.merchant}\n"
-    output_text += f"Category: {parsed_receipt.category}\n"
-    output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
-    output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
-    output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
-    output_text += f"💡 To make changes, just type what you'd like to adjust or send a voice message"
-
-    # Create approval buttons with timestamp
-    keyboard = [[
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
-    ]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Send the message and store its ID
-    sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
-    receipt_data[user_id]["latest_message_id"] = sent_message.message_id
-    logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
-    return AWAITING_APPROVAL
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    logger.info(f"Received photo from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return ConversationHandler.END
-    
-    photo = update.message.photo[-1]  # Get highest resolution photo
-    file = await context.bot.get_file(photo.file_id)
-    
-    # Create secure temporary file
-    file_path = file_handler.create_secure_temp_file(".jpg")
-    
+async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
+    """Background task for periodic cleanup."""
     try:
-        # Get user comment/caption if provided
-        user_comment = update.message.caption if update.message.caption else None
-        if user_comment:
-            user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
-            logger.info(f"User provided comment with photo: {user_comment[:100]}...")
-        else:
-            logger.info("No user comment provided with photo")
+        # Clean up expired sessions
+        session_manager.cleanup_expired_sessions()
+        logger.debug("Session cleanup completed")
         
-        logger.info(f"Downloading receipt photo (file_id: {photo.file_id})")
-        await file.download_to_drive(file_path)
-        logger.info(f"Receipt photo downloaded to {file_path}")
-
-        # Validate file size and type
-        try:
-            file_handler.validate_file_size(file_path)
-            detected_mime_type = file_handler.validate_file_type(file_path, ALLOWED_IMAGE_TYPES)
-            logger.info(f"File validation successful: {detected_mime_type}")
-        except SecurityException as e:
-            logger.warning(f"File validation failed: {e.user_message}")
-            await update.message.reply_text(f"❌ {e.user_message}")
-            return ConversationHandler.END
-
-        await update.message.reply_text("Processing your receipt...")
-
-        try:
-            # Parse image with Gemini, including user comment if provided
-            logger.info(f"Sending receipt image to Gemini for analysis")
-            gemini_output = parse_receipt_image(file_path, user_comment)
-            logger.info("Successfully received response from Gemini")
-            
-            # Validate and sanitize the response
-            try:
-                import json
-                raw_data = json.loads(gemini_output)
-                validated_data = InputValidator.validate_receipt_data(raw_data)
-                gemini_output = json.dumps(validated_data)
-            except (json.JSONDecodeError, SecurityException) as e:
-                logger.error(f"Invalid data from Gemini API: {e}")
-                await update.message.reply_text("❌ Sorry, I couldn't process the receipt properly. Please try again.")
-                return ConversationHandler.END
-            
-            # Parse the receipt data into object
-            user_id = update.effective_user.id
-            logger.info(f"Parsing Gemini output for user {user_id}")
-            parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
-            logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
-            
-            # Present preview with approval buttons using shared presenter
-            return await present_parsed_receipt(
-                update,
-                context,
-                parsed_receipt=parsed_receipt,
-                original_json=gemini_output,
-                preface="Here's what I found in your receipt:",
-                user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None)
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to process receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
-            await handle_ai_service_error(update, e, "receipt")
-        
+        # Clean up any orphaned temporary files
+        file_handler.cleanup_all_temp_files()
+        logger.debug("Temporary file cleanup completed")
     except Exception as e:
-        logger.error(f"Unexpected error in photo handling: {e}", exc_info=True)
-        await update.message.reply_text("❌ An error occurred while processing your photo. Please try again.")
-    finally:
-        # Always clean up the temporary file
-        file_handler.cleanup_temp_file(file_path)
-        
-    return ConversationHandler.END
-
-async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    user = update.effective_user
-    logger.info(f"Received receipt approval response from user {user.full_name} (ID: {user_id})")
-    
-    user_data = receipt_data.get(user_id)
-    
-    if not user_data:
-        await query.edit_message_text("Sorry, I couldn't find your receipt data. Please try again.")
-        return ConversationHandler.END
-    
-    # Extract action and timestamp from callback data
-    callback_parts = query.data.split('_')
-    if len(callback_parts) != 2:
-        await query.edit_message_text("⚠️ This button is no longer active. Please use the buttons from the latest message.")
-        return ConversationHandler.END
-    
-    action, timestamp = callback_parts
-    latest_timestamp = user_data.get("latest_timestamp")
-    
-    # Check if this is the latest message
-    if timestamp != latest_timestamp:
-        await query.edit_message_text("⚠️ This button is no longer active. Please use the buttons from the latest message.")
-        return ConversationHandler.END
-    
-    if action == "approve":
-        try:
-            # Get or create user
-            user = User(user_id=user_id, name=update.effective_user.full_name)
-            get_or_create_user(user)
-            logger.info(f"User verified/created in database: {user.name} (ID: {user.user_id})")
-            
-            # Get the already parsed receipt and save it
-            receipt = user_data["parsed_receipt"]
-            logger.info(f"Saving receipt to database: {receipt.merchant}, {receipt.total_amount:.2f}")
-            receipt_id = add_receipt(receipt)
-            logger.info(f"Receipt saved successfully with ID: {receipt_id}")
-            
-            # Remove buttons and show success message
-            await query.edit_message_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
-        except Exception as e:
-            logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"Failed to save receipt: {e}", reply_markup=get_persistent_keyboard())
-        
-        # Clean up stored data
-        if user_id in receipt_data:
-            del receipt_data[user_id]
-        return ConversationHandler.END
-    
-    elif action == "reject":
-        logger.info(f"Receipt rejected by user {user_id}")
-        # Remove buttons and show rejection message
-        await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.", reply_markup=get_persistent_keyboard())
-        
-        # Clean up stored data
-        if user_id in receipt_data:
-            del receipt_data[user_id]
-        return ConversationHandler.END
-    
-    else:
-        await query.edit_message_text("⚠️ Unknown action. Please use the buttons from the latest message.")
-        return ConversationHandler.END
-
-
-async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user text comments for receipt adjustments."""
-    user_id = update.effective_user.id
-    user = update.effective_user
-    user_comment = update.message.text
-    
-    logger.info(f"Received user comment from {user.full_name} (ID: {user_id}): {user_comment[:100]}...")
-    
-    user_data = receipt_data.get(user_id)
-    if not user_data:
-        await update.message.reply_text("Sorry, I couldn't find your receipt data. Please start over by sending a new receipt photo.")
-        return ConversationHandler.END
-    
-    # Sanitize user input
-    try:
-        user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
-        if not user_comment.strip():
-            await update.message.reply_text("❌ Your comment appears to be empty. Please try again.")
-            return ConversationHandler.END
-    except Exception as e:
-        logger.error(f"Error sanitizing user comment: {e}")
-        await update.message.reply_text("❌ Invalid comment. Please try again.")
-        return ConversationHandler.END
-    
-    await update.message.reply_text("Processing your changes...")
-    
-    try:
-        # Remove buttons from the previous message if it exists
-        old_message_id = user_data.get("latest_message_id")
-        if old_message_id:
-            try:
-                await context.bot.edit_message_reply_markup(
-                    chat_id=user_id,
-                    message_id=old_message_id,
-                    reply_markup=None
-                )
-                logger.info(f"Removed buttons from previous message {old_message_id} for user {user_id}")
-            except Exception as e:
-                logger.warning(f"Could not remove buttons from previous message {old_message_id}: {str(e)}")
-        
-        # Get the original JSON and send update request to Gemini
-        original_json = user_data["original_json"]
-        logger.info(f"Sending update request to Gemini with user comment: {user_comment}")
-        updated_json = update_receipt_with_comment(original_json, user_comment)
-        logger.info("Successfully received updated JSON from Gemini")
-        
-        # Validate and sanitize the response
-        try:
-            import json
-            raw_data = json.loads(updated_json)
-            validated_data = InputValidator.validate_receipt_data(raw_data)
-            updated_json = json.dumps(validated_data)
-        except (json.JSONDecodeError, SecurityException) as e:
-            logger.error(f"Invalid updated data from Gemini API: {e}")
-            await update.message.reply_text("❌ Sorry, I couldn't apply your changes properly. Please try again.")
-            return ConversationHandler.END
-        
-        # Parse the updated receipt data
-        updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
-        logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
-        
-        # Present updated preview using shared presenter
-        return await present_parsed_receipt(
-            update,
-            context,
-            parsed_receipt=updated_receipt,
-            original_json=updated_json,
-            preface="Here's the updated receipt:",
-            user_text_line=f"📝 Your changes: {user_comment}"
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to process user comment for user {user_id}: {str(e)}", exc_info=True)
-        await handle_ai_service_error(update, e, "changes")
-        return ConversationHandler.END
-
-
-async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages as receipt sources (not just comments)."""
-    user = update.effective_user
-    logger.info(f"Received voice receipt from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return ConversationHandler.END
-    
-    # Get the voice message
-    voice = update.message.voice
-    file = await context.bot.get_file(voice.file_id)
-    voice_file_path = file_handler.create_secure_temp_file(".ogg")
-    
-    try:
-        logger.info(f"Downloading voice receipt (file_id: {voice.file_id})")
-        await file.download_to_drive(voice_file_path)
-        logger.info(f"Voice receipt downloaded to {voice_file_path}")
-
-        # Validate file size and type
-        try:
-            file_handler.validate_file_size(voice_file_path)
-            detected_mime_type = file_handler.validate_file_type(voice_file_path, ALLOWED_AUDIO_TYPES)
-            logger.info(f"Voice file validation successful: {detected_mime_type}")
-        except SecurityException as e:
-            logger.warning(f"Voice file validation failed: {e.user_message}")
-            await update.message.reply_text(f"❌ {e.user_message}")
-            return ConversationHandler.END
-
-        await update.message.reply_text("🎙️ Processing your voice receipt...")
-
-        try:
-            # Transcribe and notify user immediately
-            transcribed_text = await transcribe_voice_and_notify(
-                update,
-                context,
-                voice_file_path=voice_file_path,
-                heard_prefix="🎙️ I heard:",
-                next_hint="🛠️ Creating a receipt summary..."
-            )
-            
-            # Sanitize transcribed text
-            transcribed_text = InputValidator.sanitize_text(transcribed_text, max_length=1000)
-            
-            # Convert transcribed text to receipt structure using Gemini
-            logger.info("Converting transcribed text to receipt structure")
-            gemini_output = parse_voice_to_receipt(transcribed_text)
-            logger.info("Successfully received receipt structure from Gemini")
-            
-            # Validate and sanitize the response
-            try:
-                import json
-                raw_data = json.loads(gemini_output)
-                validated_data = InputValidator.validate_receipt_data(raw_data)
-                gemini_output = json.dumps(validated_data)
-            except (json.JSONDecodeError, SecurityException) as e:
-                logger.error(f"Invalid data from Gemini API: {e}")
-                await update.message.reply_text("❌ Sorry, I couldn't understand your voice message properly. Please try again.")
-                return ConversationHandler.END
-            
-            # Parse the receipt data into object
-            user_id = update.effective_user.id
-            logger.info(f"Parsing Gemini output for user {user_id}")
-            parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
-            logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
-
-            # Present preview with approval buttons
-            return await present_parsed_receipt(
-                update,
-                context,
-                parsed_receipt=parsed_receipt,
-                original_json=gemini_output,
-                preface="Here's what I understood from your voice message:",
-                user_text_line=f"🎙️ Your message: \"{transcribed_text}\""
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to process voice receipt for user {update.effective_user.id}: {str(e)}", exc_info=True)
-            await handle_ai_service_error(update, e, "voice")
-    
-    except Exception as e:
-        logger.error(f"Unexpected error in voice receipt handling: {e}", exc_info=True)
-        await update.message.reply_text("❌ An error occurred while processing your voice message. Please try again.")
-    finally:
-        # Clean up the voice file
-        file_handler.cleanup_temp_file(voice_file_path)
-        
-    return ConversationHandler.END
-
-
-async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user voice messages for receipt adjustments."""
-    user_id = update.effective_user.id
-    user = update.effective_user
-    
-    logger.info(f"Received voice message from {user.full_name} (ID: {user_id})")
-    
-    user_data = receipt_data.get(user_id)
-    if not user_data:
-        await update.message.reply_text("Sorry, I couldn't find your receipt data. Please start over by sending a new receipt photo.")
-        return ConversationHandler.END
-    
-    # Get the voice message
-    voice = update.message.voice
-    file = await context.bot.get_file(voice.file_id)
-    voice_file_path = file_handler.create_secure_temp_file(".ogg")
-    
-    try:
-        logger.info(f"Downloading voice message (file_id: {voice.file_id})")
-        await file.download_to_drive(voice_file_path)
-        logger.info(f"Voice message downloaded to {voice_file_path}")
-
-        # Validate file size and type
-        try:
-            file_handler.validate_file_size(voice_file_path)
-            detected_mime_type = file_handler.validate_file_type(voice_file_path, ALLOWED_AUDIO_TYPES)
-            logger.info(f"Voice file validation successful: {detected_mime_type}")
-        except SecurityException as e:
-            logger.warning(f"Voice file validation failed: {e.user_message}")
-            await update.message.reply_text(f"❌ {e.user_message}")
-            return ConversationHandler.END
-
-        await update.message.reply_text("🎙️ Processing your voice message...")
-        
-        try:
-            # Transcribe and notify user immediately
-            user_comment = await transcribe_voice_and_notify(
-                update,
-                context,
-                voice_file_path=voice_file_path,
-                heard_prefix="🎙️ Your voice comment:",
-                next_hint="🛠️ Applying your changes to the receipt..."
-            )
-            
-            # Sanitize transcribed text
-            user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
-            
-            # Remove buttons from the previous message if it exists
-            old_message_id = user_data.get("latest_message_id")
-            if old_message_id:
-                try:
-                    await context.bot.edit_message_reply_markup(
-                        chat_id=user_id,
-                        message_id=old_message_id,
-                        reply_markup=None
-                    )
-                    logger.info(f"Removed buttons from previous message {old_message_id} for user {user_id}")
-                except Exception as e:
-                    logger.warning(f"Could not remove buttons from previous message {old_message_id}: {str(e)}")
-            
-            # Get the original JSON and send update request to Gemini
-            original_json = user_data["original_json"]
-            logger.info(f"Sending update request to Gemini with transcribed comment: {user_comment}")
-            updated_json = update_receipt_with_comment(original_json, user_comment)
-            logger.info("Successfully received updated JSON from Gemini")
-            
-            # Validate and sanitize the response
-            try:
-                import json
-                raw_data = json.loads(updated_json)
-                validated_data = InputValidator.validate_receipt_data(raw_data)
-                updated_json = json.dumps(validated_data)
-            except (json.JSONDecodeError, SecurityException) as e:
-                logger.error(f"Invalid updated data from Gemini API: {e}")
-                await update.message.reply_text("❌ Sorry, I couldn't apply your changes properly. Please try again.")
-                return ConversationHandler.END
-            
-            # Parse the updated receipt data
-            updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
-            logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
-            
-            # Present updated preview using shared presenter
-            return await present_parsed_receipt(
-                update,
-                context,
-                parsed_receipt=updated_receipt,
-                original_json=updated_json,
-                preface="Here's the updated receipt:",
-                user_text_line=f"🎙️ Your voice message: \"{user_comment}\""
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to process voice comment for user {user_id}: {str(e)}", exc_info=True)
-            await handle_ai_service_error(update, e, "voice_changes")
-            return ConversationHandler.END
-    
-    except Exception as e:
-        logger.error(f"Unexpected error in voice comment handling: {e}", exc_info=True)
-        await update.message.reply_text("❌ An error occurred while processing your voice message. Please try again.")
-        return ConversationHandler.END
-    finally:
-        # Clean up the voice file
-        file_handler.cleanup_temp_file(voice_file_path)
-
-
-async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle calendar date picker interactions."""
-    query = update.callback_query
-    await query.answer()
-    
-    user = update.effective_user
-    user_id = user.id
-    
-    # Check authorization first
-    if user_id == get_admin_user_id():
-        # Admin is always authorized
-        pass
-    else:
-        # Check database authorization for non-admin users
-        db_user = get_user(user_id)
-        if not db_user or not db_user.is_authorized:
-            logger.warning(f"Unauthorized calendar access attempt from user {user.full_name} (ID: {user_id})")
-            await query.edit_message_text("Sorry, you are not authorized to use this bot.")
-            return
-    
-    callback_data = query.data
-    
-    if callback_data.startswith("cal_nav_"):
-        # Navigation to different month
-        _, _, year_str, month_str = callback_data.split("_")
-        year, month = int(year_str), int(month_str)
-        
-        calendar_keyboard = create_calendar_keyboard(year, month)
-        await query.edit_message_text(
-            "📅 Select a date to view receipts:",
-            reply_markup=calendar_keyboard
-        )
-    
-    elif callback_data.startswith("cal_date_"):
-        # Date selected
-        _, _, year_str, month_str, day_str = callback_data.split("_")
-        year, month, day = int(year_str), int(month_str), int(day_str)
-        
-        # Format date as DD-MM-YYYY for database query
-        formatted_date = f"{day:02d}-{month:02d}-{year}"
-        display_date = f"{day}.{month}.{year}"
-        
-        logger.info(f"Calendar date selected: {formatted_date} by user {user_id}")
-        
-        # Get receipts for the selected date
-        receipts = get_receipts_by_date(user_id, formatted_date)
-        formatted_text = format_receipts_list(receipts, f"Receipts for {display_date}", user_id)
-        
-        await query.edit_message_text(formatted_text, reply_markup=get_persistent_keyboard())
-    
-    elif callback_data == "cal_close":
-        # Close calendar
-        await query.edit_message_text("📅 Calendar closed.", reply_markup=get_persistent_keyboard())
-    
-    elif callback_data == "cal_ignore":
-        # Ignore clicks on header/day labels
-        pass
-
-async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle clicks on persistent buttons."""
-    query = update.callback_query
-    await query.answer()
-    
-    user = update.effective_user
-    user_id = user.id
-    
-    # Use the same authorization logic as other handlers
-    # Check if user is admin first
-    if user_id == get_admin_user_id():
-        # Admin is always authorized
-        pass
-    else:
-        # Check database authorization for non-admin users
-        db_user = get_user(user_id)
-        if not db_user or not db_user.is_authorized:
-            logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user_id})")
-            await query.edit_message_text("Sorry, you are not authorized to use this bot.")
-            return
-    
-    if query.data == "persistent_calendar":
-        logger.info(f"Persistent calendar button clicked by user {user.full_name} (ID: {user_id})")
-        
-        # Show date picker
-        current_date = datetime.now()
-        calendar_keyboard = create_calendar_keyboard(current_date.year, current_date.month)
-        
-        await query.edit_message_text(
-            "📅 Select a date to view receipts:\n\n"
-            "💡 Tip: You can also type /date DD.MM or /date DD.MM.YYYY for quick access",
-            reply_markup=calendar_keyboard
-        )
-    
-    elif query.data == "persistent_summary":
-        logger.info(f"Persistent summary button clicked by user {user.full_name} (ID: {user_id})")
-        
-        try:
-            # Default to last 3 months for button click
-            n = 3
-            logger.info(f"Generating {n} month summary for user {user_id}")
-            
-            summary = get_monthly_summary(user_id, n)
-            if not summary:
-                await query.edit_message_text("No data found for the last 3 months.", reply_markup=get_persistent_keyboard())
-                return
-
-            text = "Monthly summary (last 3 months):\n\n"
-            for month_data in summary:
-                text += (f"{month_data['month']}: "
-                        f"{month_data['count']} receipts, "
-                        f"total: {month_data['total']:.2f}\n")
-            
-            await query.edit_message_text(text, reply_markup=get_persistent_keyboard())
-            
-        except Exception as e:
-            logger.error(f"Error during summary generation for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"❌ Failed to generate summary: {str(e)}", reply_markup=get_persistent_keyboard())
-
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle any text messages that are not commands."""
-    user = update.effective_user
-    logger.info(f"Received text message from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return
-    
-    reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase, or\n• ✍️ Use /add followed by a text description (e.g., /add Bought sushi for 20 USD at Kyoto)\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
-    
-    await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
+        logger.error(f"Error in cleanup task: {str(e)}")
 
 async def handle_user_auth_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin-only handler to approve or reject user access requests."""
@@ -1132,228 +294,17 @@ async def handle_user_auth_decision(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"Error handling user auth decision: {e}", exc_info=True)
         await query.edit_message_text("Failed to process the request.")
 
-async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /add command to create a receipt from a text description."""
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle any text messages that are not commands."""
     user = update.effective_user
-    logger.info(f"Add command received from user {user.full_name} (ID: {user.id})")
-
-    if not await check_user_access(update, context):
-        return
-
-    # Extract the text after /add
-    user_text = " ".join(context.args) if context.args else ""
-    if not user_text:
-        await update.message.reply_text(
-            "Please provide a purchase description after /add. Example: /add Bought groceries for 25 EUR at Tesco yesterday",
-            reply_markup=get_persistent_keyboard()
-        )
-        return
-
-    # Sanitize and validate user input
-    try:
-        user_text = InputValidator.sanitize_text(user_text, max_length=1000)
-        if not user_text.strip():
-            await update.message.reply_text(
-                "❌ Your description appears to be empty. Please try again.",
-                reply_markup=get_persistent_keyboard()
-            )
-            return
-    except Exception as e:
-        logger.error(f"Error sanitizing user text: {e}")
-        await update.message.reply_text(
-            "❌ Invalid description. Please try again.",
-            reply_markup=get_persistent_keyboard()
-        )
-        return
-
-    try:
-        await update.message.reply_text("📝 Processing your text receipt...")
-        logger.info("Converting text to receipt structure via Gemini")
-        gemini_output = parse_voice_to_receipt(user_text)
-        logger.info("Successfully received receipt structure from Gemini for text input")
-
-        # Validate and sanitize the response
-        try:
-            import json
-            raw_data = json.loads(gemini_output)
-            validated_data = InputValidator.validate_receipt_data(raw_data)
-            gemini_output = json.dumps(validated_data)
-        except (json.JSONDecodeError, SecurityException) as e:
-            logger.error(f"Invalid data from Gemini API: {e}")
-            await update.message.reply_text("❌ Sorry, I couldn't process your description properly. Please try again.")
-            return ConversationHandler.END
-
-        user_id = update.effective_user.id
-        logger.info(f"Parsing Gemini output for user {user_id}")
-        parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
-        logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
-
-        return await present_parsed_receipt(
-            update,
-            context,
-            parsed_receipt=parsed_receipt,
-            original_json=gemini_output,
-            preface="Here's what I understood from your text:",
-            user_text_line=f"📝 Your text: \"{user_text}\""
-        )
-    except Exception as e:
-        logger.error(f"Failed to process /add text receipt for user {user.id}: {str(e)}", exc_info=True)
-        await handle_ai_service_error(update, e, "text")
-        return ConversationHandler.END
-
-async def backup_task(context: ContextTypes.DEFAULT_TYPE):
-    """Background task to check and upload database changes."""
-    try:
-        cloud_storage.check_and_upload_db()
-        logger.info("Backup task completed successfully")
-    except Exception as e:
-        logger.error(f"Error in backup task: {str(e)}")
-
-# Group management commands
-
-async def show_group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show current group information for the user."""
-    user = update.effective_user
-    logger.info(f"Group info command received from user {user.full_name} (ID: {user.id})")
+    logger.info(f"Received text message from user {user.full_name} (ID: {user.id})")
     
     if not await check_user_access(update, context):
         return
     
-    try:
-        user_group = get_user_group(update.effective_user.id)
-        if not user_group:
-            await update.message.reply_text(
-                "You are not currently in any group.\n\n"
-                "To join a group, use /joingroup GROUP_ID\n"
-                "To create a new group (admin only), use /creategroup DESCRIPTION",
-                reply_markup=get_persistent_keyboard()
-            )
-            return
-        
-        # Get group members
-        members = get_group_members(user_group.group_id)
-        member_names = [f"• {member.name} (ID: {member.user_id})" for member in members]
-        
-        group_text = (
-            f"📊 Your Group: {user_group.description}\n"
-            f"Group ID: {user_group.group_id}\n\n"
-            f"Members ({len(members)}):\n"
-            + "\n".join(member_names) +
-            "\n\n💡 All receipts from group members are included in your lists, summaries, and searches."
-        )
-        
-        await update.message.reply_text(group_text, reply_markup=get_persistent_keyboard())
-        
-    except Exception as e:
-        logger.error(f"Error showing group info for user {update.effective_user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to get group information: {str(e)}", reply_markup=get_persistent_keyboard())
-
-async def create_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Create a new group (admin only)."""
-    user = update.effective_user
-    logger.info(f"Create group command received from user {user.full_name} (ID: {user.id})")
+    reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase, or\n• ✍️ Use /add followed by a text description (e.g., /add Bought sushi for 20 USD at Kyoto)\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
     
-    if not await check_user_access(update, context):
-        return
-    
-    # Check if user is admin
-    if user.id != get_admin_user_id():
-        await update.message.reply_text("❌ Only the admin can create groups.", reply_markup=get_persistent_keyboard())
-        return
-    
-    # Extract the description after /creategroup
-    description = " ".join(context.args) if context.args else ""
-    if not description:
-        await update.message.reply_text(
-            "Please provide a group description after /creategroup. Example: /creategroup Family Expenses",
-            reply_markup=get_persistent_keyboard()
-        )
-        return
-    
-    try:
-        group_id = create_group(description)
-        await update.message.reply_text(
-            f"✅ Group created successfully!\n\n"
-            f"Group ID: {group_id}\n"
-            f"Description: {description}\n\n"
-            f"Share the Group ID {group_id} with others so they can join using /joingroup {group_id}",
-            reply_markup=get_persistent_keyboard()
-        )
-        
-    except Exception as e:
-        logger.error(f"Error creating group for user {user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to create group: {str(e)}", reply_markup=get_persistent_keyboard())
-
-async def join_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Join a group.
-    
-    SECURITY WARNING: This function is currently disabled because it presents a security risk.
-    Anyone who discovers a group ID can join and access all group members' expense data.
-    Group membership should be managed by the admin only to protect privacy.
-    
-    To re-enable, uncomment the handler in main() and implement proper authorization:
-    - Require admin approval for group joins
-    - Or implement invite codes/links
-    - Or restrict to pre-authorized users only
-    """
-    user = update.effective_user
-    logger.warning(f"SECURITY: Disabled join group command attempted by user {user.full_name} (ID: {user.id})")
-    
-    await update.message.reply_text(
-        "🔒 Group joining is currently disabled for security reasons.\n\n"
-        "Group membership is managed by the admin to protect expense privacy.\n"
-        "Contact the admin if you need to be added to a group.",
-        reply_markup=get_persistent_keyboard()
-    )
-
-async def leave_group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Leave current group."""
-    user = update.effective_user
-    logger.info(f"Leave group command received from user {user.full_name} (ID: {user.id})")
-    
-    if not await check_user_access(update, context):
-        return
-    
-    try:
-        # Check if user is in a group
-        current_group = get_user_group(update.effective_user.id)
-        if not current_group:
-            await update.message.reply_text(
-                "❌ You are not currently in any group.",
-                reply_markup=get_persistent_keyboard()
-            )
-            return
-        
-        # Remove user from group
-        success = remove_user_from_group(update.effective_user.id, current_group.group_id)
-        if success:
-            await update.message.reply_text(
-                f"✅ Successfully left group '{current_group.description}' (ID: {current_group.group_id}).\n\n"
-                f"You will now only see your own receipts in lists and summaries.",
-                reply_markup=get_persistent_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                f"❌ Error leaving group.",
-                reply_markup=get_persistent_keyboard()
-            )
-        
-    except Exception as e:
-        logger.error(f"Error leaving group for user {user.id}: {str(e)}", exc_info=True)
-        await update.message.reply_text(f"❌ Failed to leave group: {str(e)}", reply_markup=get_persistent_keyboard())
-
-async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
-    """Background task for periodic cleanup."""
-    try:
-        # Clean up expired sessions
-        session_manager.cleanup_expired_sessions()
-        logger.debug("Session cleanup completed")
-        
-        # Clean up any orphaned temporary files
-        file_handler.cleanup_all_temp_files()
-        logger.debug("Temporary file cleanup completed")
-    except Exception as e:
-        logger.error(f"Error in cleanup task: {str(e)}")
+    await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
 # Environment variables
 USE_WEBHOOK = os.getenv('USE_WEBHOOK', 'false').lower() == 'true'
@@ -1505,9 +456,9 @@ def main():
     # Create conversation handler for photo processing
     conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.PHOTO, handle_photo),
-            MessageHandler(filters.VOICE, handle_voice_receipt),
-            CommandHandler('add', add_text_receipt),
+            MessageHandler(filters.PHOTO, lambda update, context: handle_photo(update, context, check_user_access)),
+            MessageHandler(filters.VOICE, lambda update, context: handle_voice_receipt(update, context, check_user_access)),
+            CommandHandler('add', lambda update, context: add_text_receipt(update, context, check_user_access)),
         ],
         states={
             AWAITING_APPROVAL: [
@@ -1520,21 +471,26 @@ def main():
     )
     
     application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('list', list_receipts))
-    application.add_handler(CommandHandler('date', show_receipts_by_date))
-    application.add_handler(CommandHandler('delete', delete_receipt_cmd))
-    application.add_handler(CommandHandler('summary', show_summary))
+    application.add_handler(CommandHandler('list', lambda update, context: list_receipts(update, context, check_user_access)))
+    application.add_handler(CommandHandler('date', lambda update, context: show_receipts_by_date(update, context, check_user_access)))
+    application.add_handler(CommandHandler('delete', lambda update, context: delete_receipt_cmd(update, context, check_user_access)))
+    application.add_handler(CommandHandler('summary', lambda update, context: show_summary(update, context, check_user_access)))
     application.add_handler(CommandHandler('flush', flush_database))
-    application.add_handler(CommandHandler('group', show_group_info))
-    application.add_handler(CommandHandler('creategroup', create_group_cmd))
-    # application.add_handler(CommandHandler('joingroup', join_group_cmd))  # SECURITY: Disabled - allows unauthorized access to group expenses
-    application.add_handler(CommandHandler('leavegroup', leave_group_cmd))
+    application.add_handler(CommandHandler('group', lambda update, context: show_group_info(update, context, check_user_access)))
+    application.add_handler(CommandHandler('creategroup', lambda update, context: create_group_cmd(update, context, check_user_access, get_admin_user_id)))
+    # application.add_handler(CommandHandler('joingroup', lambda update, context: join_group_cmd(update, context, check_user_access)))  # SECURITY: Disabled - allows unauthorized access to group expenses
+    application.add_handler(CommandHandler('leavegroup', lambda update, context: leave_group_cmd(update, context, check_user_access)))
+    # Admin-only group management commands
+    application.add_handler(CommandHandler('addusertogroup', lambda update, context: add_user_to_group_admin(update, context, check_user_access, get_admin_user_id)))
+    application.add_handler(CommandHandler('removeuserfromgroup', lambda update, context: remove_user_from_group_admin(update, context, check_user_access, get_admin_user_id)))
+    application.add_handler(CommandHandler('listallgroups', lambda update, context: list_all_groups_admin(update, context, check_user_access, get_admin_user_id)))
+    application.add_handler(CommandHandler('deletegroup', lambda update, context: delete_group_admin(update, context, check_user_access, get_admin_user_id)))
     application.add_handler(conv_handler)
     
     # Handler for persistent buttons
-    application.add_handler(CallbackQueryHandler(handle_persistent_buttons, pattern="^persistent_"))
+    application.add_handler(CallbackQueryHandler(lambda update, context: handle_persistent_buttons(update, context, get_admin_user_id), pattern="^persistent_"))
     # Handler for calendar interactions
-    application.add_handler(CallbackQueryHandler(handle_calendar_callback, pattern="^cal_"))
+    application.add_handler(CallbackQueryHandler(lambda update, context: handle_calendar_callback(update, context, get_admin_user_id), pattern="^cal_"))
     # Handler for admin approvals
     application.add_handler(CallbackQueryHandler(handle_user_auth_decision, pattern=r"^auth_(approve|reject)_\d+$"))
     
