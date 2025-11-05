@@ -24,18 +24,23 @@ class AIServiceMalformedJSONError(Exception):
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 # =============================================================================
+# CATEGORIES CONFIGURATION
+# =============================================================================
+EXPENSE_CATEGORIES = ["food", "alcohol", "transport", "clothes", "vacation", "sport", "healthcare", "beauty", "household", "car", "cat", "other"]
+
+# =============================================================================
 # RECEIPT JSON STRUCTURE
 # =============================================================================
 RECEIPT_JSON_STRUCTURE = """{
     "text": "full text content of the receipt, exactly as written",
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
-    "category": "closest matching category from this list: [food, alcohol, transport, clothes, vacation, sport, healthcare, beauty, household, car, cat, other]",
+    "category": "closest matching category from this list: """ + str(EXPENSE_CATEGORIES) + """",
     "merchant": "name of the store or merchant",
     "positions": [
         {
             "description": "item description",
             "quantity": "item quantity as a number or weight",
-            "category": "item category from this list: [food, alcohol, transport, clothes, vacation, sport, healthcare, beauty, household, car, cat, other]. Cat food should be categorized as 'cat'",
+            "category": "item category from this list: """ + str(EXPENSE_CATEGORIES) + """. Cat food should be categorized as 'cat'",
             "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
         }
     ],
