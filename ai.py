@@ -433,17 +433,28 @@ class OpenAIProvider(AIProvider):
         self.api_key = os.environ.get('OPENAI_API_KEY')
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY environment variable is not set")
-        self.model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+        
+        # Model selection optimized for performance and quality:
+        # - gpt-4o-mini: Fastest model with high quality for image recognition
+        # - gpt-4o-mini: Fastest model with mid quality for text processing
+        # - whisper-1: Fastest Whisper model for speech recognition
+        self.vision_model = 'gpt-4o-mini'  # For image recognition (fastest + high quality)
+        self.text_model = 'gpt-4o-mini'    # For text processing (fastest + mid quality)
+        
+        logger.info(f"OpenAI Provider initialized - Vision model: {self.vision_model}, Text model: {self.text_model}")
     
-    def _make_request(self, messages: list, max_tokens: int = 4000) -> dict:
+    def _make_request(self, messages: list, max_tokens: int = 4000, model: str = None) -> dict:
         """Make a request to OpenAI API."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
+        # Use provided model or default to text model
+        selected_model = model or self.text_model
+        
         payload = {
-            "model": self.model,
+            "model": selected_model,
             "messages": messages,
             "max_tokens": max_tokens
         }
@@ -506,7 +517,8 @@ class OpenAIProvider(AIProvider):
         ]
 
         logger.info("Sending request to OpenAI API")
-        result = self._make_request(messages)
+        logger.debug(f"Using vision model: {self.vision_model} for image recognition")
+        result = self._make_request(messages, model=self.vision_model)
         logger.info("Successfully received response from OpenAI API")
         
         response_text = result["choices"][0]["message"]["content"]
@@ -532,7 +544,7 @@ class OpenAIProvider(AIProvider):
         ]
 
         logger.info("Sending update request to OpenAI API")
-        result = self._make_request(messages)
+        result = self._make_request(messages, model=self.text_model)
         logger.info("Successfully received update response from OpenAI API")
         
         response_text = result["choices"][0]["message"]["content"]
@@ -541,6 +553,7 @@ class OpenAIProvider(AIProvider):
     def convert_voice_to_text(self, voice_file_path: str) -> str:
         """Convert voice message to text using OpenAI Whisper."""
         logger.info(f"Converting voice message to text from {voice_file_path}")
+        logger.debug("Using whisper-1 model for speech recognition (fastest + mid quality)")
         
         # Use OpenAI's Whisper API for transcription
         url = "https://api.openai.com/v1/audio/transcriptions"
@@ -552,7 +565,7 @@ class OpenAIProvider(AIProvider):
         with open(voice_file_path, "rb") as audio_file:
             files = {
                 "file": audio_file,
-                "model": (None, "whisper-1"),
+                "model": (None, "whisper-1"),  # Fastest Whisper model for mid-quality speech recognition
                 "response_format": (None, "text")
             }
             
@@ -589,7 +602,8 @@ class OpenAIProvider(AIProvider):
         ]
 
         logger.info("Sending voice-to-receipt request to OpenAI API")
-        result = self._make_request(messages)
+        logger.debug(f"Using text model: {self.text_model} for voice-to-receipt conversion")
+        result = self._make_request(messages, model=self.text_model)
         logger.info("Successfully received voice-to-receipt response from OpenAI API")
         
         response_text = result["choices"][0]["message"]["content"]
