@@ -419,12 +419,8 @@ class OpenAIProvider(AIProvider):
             raise ValueError("OPENAI_API_KEY environment variable is not set")
         
         # Model selection optimized for quality over speed:
-        # - gpt-4o: Latest high-quality model for image recognition 
-        # - gpt-4o: Latest high-quality model for text processing
-        # - whisper-1: Fastest Whisper model for speech recognition
-        # Note: GPT-5 is not yet available. gpt-4o is currently the best available model.
-        self.vision_model = 'gpt-4o'  # For image recognition (latest high quality)
-        self.text_model = 'gpt-4o'    # For text processing (latest high quality)
+        self.vision_model = 'gpt-4.1-mini'
+        self.text_model = 'gpt-4.1-mini'
         
         logger.info(f"OpenAI Provider initialized - Vision model: {self.vision_model}, Text model: {self.text_model}")
     
