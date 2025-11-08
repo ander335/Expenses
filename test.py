@@ -1,4 +1,4 @@
-from gemini import parse_receipt_image
+from ai import parse_receipt_image
 import json
 from datetime import datetime
 from parse import parse_receipt_from_file

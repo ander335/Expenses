@@ -6,7 +6,7 @@ from logger_config import logger
 import time
 import json
 from parse import parse_receipt_from_gemini
-from gemini import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError
+from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError
 from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES
