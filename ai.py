@@ -420,7 +420,7 @@ class OpenAIProvider(AIProvider):
         
         # Model selection optimized for quality over speed:
         self.vision_model = 'gpt-4.1-mini'
-        self.text_model = 'gpt-4.1-mini'
+        self.text_model = self.vision_model
         
         logger.info(f"OpenAI Provider initialized - Vision model: {self.vision_model}, Text model: {self.text_model}")
     
