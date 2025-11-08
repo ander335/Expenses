@@ -31,7 +31,6 @@ AI_PROVIDER = os.environ.get('AI_PROVIDER', 'gemini').lower()  # Default to gemi
 EXPENSE_CATEGORIES = ["food", "alcohol", "transport", "clothes", "vacation", "sport", "healthcare", "beauty", "household", "car", "cat", "other"]
 
 RECEIPT_JSON_STRUCTURE = """{
-    "text": "full text content of the receipt, exactly as written",
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
     "category": "closest matching category from this list: """ + str(EXPENSE_CATEGORIES) + """",
     "merchant": "name of the store or merchant",
@@ -73,11 +72,11 @@ UPDATE_RECEIPT_PROMPT = """Update this JSON based on user comments: "{user_comme
 Original JSON: {original_json}
 Current date: {current_date}
 
-Return updated JSON with same structure. Update "description" field to note changes.
+Return ONLY the updated JSON object, nothing else. Update "description" field to note changes.
 Date handling: If user provides date without year, use current year. Format as DD-MM-YYYY.
 Language: Keep original language unless explicitly changed. Description field in ENGLISH.
 
-{user_adjustment_instructions}"""
+{user_adjustment_instructions}\""""
 
 VOICE_TO_RECEIPT_PROMPT = """Create receipt from purchase description. Rules:
 - One position if no items specified, use total as price
@@ -88,7 +87,7 @@ VOICE_TO_RECEIPT_PROMPT = """Create receipt from purchase description. Rules:
 - Extra context goes to description (direct style, no "user" references)
 - All output in ENGLISH (translate if needed)
 
-Return JSON structure: {receipt_structure}
+Return ONLY a JSON object with this structure: {receipt_structure}
 
 User description: "{user_text}\""""
 
@@ -192,8 +191,22 @@ def parse_json_response(response_text: str, operation_type: str = "parsing") -> 
     if parsed_data.endswith('```'):
         parsed_data = parsed_data[:-3].rstrip()
     
-    # Clean up any remaining whitespace and ensure we have valid JSON
-    cleaned_data = parsed_data.strip()
+    # Try to find JSON object in the response
+    # Look for the first '{' and last '}' to extract JSON
+    start_idx = parsed_data.find('{')
+    end_idx = parsed_data.rfind('}')
+    
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        # Extract potential JSON content
+        json_candidate = parsed_data[start_idx:end_idx + 1]
+        logger.debug(f"Extracted JSON candidate (first 100 chars): {json_candidate[:100]}")
+    else:
+        # No clear JSON structure found, use cleaned data as is
+        json_candidate = parsed_data.strip()
+        logger.debug(f"No clear JSON structure found, using full response")
+    
+    # Clean up any remaining whitespace
+    cleaned_data = json_candidate.strip()
     
     # Log the cleaned response for debugging
     logger.debug(f"Cleaned AI {operation_type} response (first 100 chars): {cleaned_data[:100]}")

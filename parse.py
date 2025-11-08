@@ -52,7 +52,7 @@ def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
         merchant=validated_data.get('merchant', 'Unknown Shop'),
         category=validated_data.get('category', 'other'),
         total_amount=float(validated_data.get('total_amount', 0)),
-        text=validated_data.get('text'),
+        text='',
         description=validated_data.get('description'),
         date=validated_data.get('date'),
         positions=positions,
