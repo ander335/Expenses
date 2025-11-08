@@ -93,7 +93,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest ^
-        --set-env-vars=TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=openai ^
+        --set-env-vars=TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=gemini ^
         --max-retries=0 ^
         --parallelism=1 ^
         --task-timeout=3600
@@ -121,7 +121,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest ^
-        --set-env-vars=USE_WEBHOOK=true,TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=openai ^
+        --set-env-vars=USE_WEBHOOK=true,TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=gemini ^
         --platform managed ^
         --allow-unauthenticated ^
         --port 8080 ^
