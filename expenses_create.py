@@ -82,11 +82,12 @@ async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFA
         The transcribed text
     """
     logger.info(f"Starting transcription for file: {voice_file_path}")
-    transcribed_text = convert_voice_to_text(voice_file_path)
+    transcribed_text, transcription_time = convert_voice_to_text(voice_file_path)
     logger.info(f"Transcription result: {transcribed_text}")
 
     # Inform user immediately; failure here shouldn't break the flow
-    immediate_message = f"{heard_prefix} \"{transcribed_text}\"\n\n{next_hint}" if next_hint else f"{heard_prefix} \"{transcribed_text}\""
+    timing_text = f"(transcription took {transcription_time:.1f}s)"
+    immediate_message = f"{heard_prefix} \"{transcribed_text}\" {timing_text}\n\n{next_hint}" if next_hint else f"{heard_prefix} \"{transcribed_text}\" {timing_text}"
     try:
         await update.message.reply_text(immediate_message)
         logger.info("Sent immediate transcription feedback to user")
@@ -176,7 +177,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check
         try:
             # Parse image with Gemini, including user comment if provided
             logger.info(f"Sending receipt image to Gemini for analysis")
-            gemini_output = parse_receipt_image(file_path, user_comment)
+            gemini_output, processing_time = parse_receipt_image(file_path, user_comment)
             logger.info("Successfully received response from Gemini")
             
             # Validate and sanitize the response
@@ -195,13 +196,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check
             parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
             logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
             
+            # Prepare preface with timing information
+            timing_text = f"(AI request took {processing_time:.1f}s)"
+            preface_with_timing = f"Here's what I found in your receipt {timing_text}:"
+            
             # Present preview with approval buttons using shared presenter
             return await present_parsed_receipt(
                 update,
                 context,
                 parsed_receipt=parsed_receipt,
                 original_json=gemini_output,
-                preface="Here's what I found in your receipt:",
+                preface=preface_with_timing,
                 user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None)
             )
             
@@ -327,7 +332,7 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Get the original JSON and send update request to Gemini
         original_json = user_data["original_json"]
         logger.info(f"Sending update request to Gemini with user comment: {user_comment}")
-        updated_json = update_receipt_with_comment(original_json, user_comment)
+        updated_json, processing_time = update_receipt_with_comment(original_json, user_comment)
         logger.info("Successfully received updated JSON from Gemini")
         
         # Validate and sanitize the response
@@ -344,13 +349,17 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
         logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
         
+        # Prepare preface with timing information
+        timing_text = f"(AI request took {processing_time:.1f}s)"
+        preface_with_timing = f"Here's the updated receipt {timing_text}:"
+        
         # Present updated preview using shared presenter
         return await present_parsed_receipt(
             update,
             context,
             parsed_receipt=updated_receipt,
             original_json=updated_json,
-            preface="Here's the updated receipt:",
+            preface=preface_with_timing,
             user_text_line=f"📝 Your changes: {user_comment}"
         )
         
@@ -404,7 +413,7 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             
             # Convert transcribed text to receipt structure using Gemini
             logger.info("Converting transcribed text to receipt structure")
-            gemini_output = parse_voice_to_receipt(transcribed_text)
+            gemini_output, processing_time = parse_voice_to_receipt(transcribed_text)
             logger.info("Successfully received receipt structure from Gemini")
             
             # Validate and sanitize the response
@@ -423,13 +432,17 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
             logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
 
+            # Prepare preface with timing information
+            timing_text = f"(AI request took {processing_time:.1f}s)"
+            preface_with_timing = f"Here's what I understood from your voice message {timing_text}:"
+
             # Present preview with approval buttons
             return await present_parsed_receipt(
                 update,
                 context,
                 parsed_receipt=parsed_receipt,
                 original_json=gemini_output,
-                preface="Here's what I understood from your voice message:",
+                preface=preface_with_timing,
                 user_text_line=f"🎙️ Your message: \"{transcribed_text}\""
             )
             
@@ -509,7 +522,7 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
             # Get the original JSON and send update request to Gemini
             original_json = user_data["original_json"]
             logger.info(f"Sending update request to Gemini with transcribed comment: {user_comment}")
-            updated_json = update_receipt_with_comment(original_json, user_comment)
+            updated_json, processing_time = update_receipt_with_comment(original_json, user_comment)
             logger.info("Successfully received updated JSON from Gemini")
             
             # Validate and sanitize the response
@@ -526,13 +539,17 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
             updated_receipt = parse_receipt_from_gemini(updated_json, user_id)
             logger.info(f"Updated receipt parsed successfully: {updated_receipt.merchant}, {updated_receipt.total_amount:.2f}")
             
+            # Prepare preface with timing information
+            timing_text = f"(AI request took {processing_time:.1f}s)"
+            preface_with_timing = f"Here's the updated receipt {timing_text}:"
+            
             # Present updated preview using shared presenter
             return await present_parsed_receipt(
                 update,
                 context,
                 parsed_receipt=updated_receipt,
                 original_json=updated_json,
-                preface="Here's the updated receipt:",
+                preface=preface_with_timing,
                 user_text_line=f"🎙️ Your voice message: \"{user_comment}\""
             )
             
@@ -586,7 +603,7 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     try:
         await update.message.reply_text("📝 Processing your text receipt...")
         logger.info("Converting text to receipt structure via Gemini")
-        gemini_output = parse_voice_to_receipt(user_text)
+        gemini_output, processing_time = parse_voice_to_receipt(user_text)
         logger.info("Successfully received receipt structure from Gemini for text input")
 
         # Validate and sanitize the response
@@ -604,12 +621,16 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
         logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
 
+        # Prepare preface with timing information
+        timing_text = f"(AI request took {processing_time:.1f}s)"
+        preface_with_timing = f"Here's what I understood from your text {timing_text}:"
+
         return await present_parsed_receipt(
             update,
             context,
             parsed_receipt=parsed_receipt,
             original_json=gemini_output,
-            preface="Here's what I understood from your text:",
+            preface=preface_with_timing,
             user_text_line=f"📝 Your text: \"{user_text}\""
         )
     except Exception as e:

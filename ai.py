@@ -7,9 +7,10 @@ import os
 import json
 import base64
 import requests
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from logger_config import logger, redact_sensitive_data
 
@@ -151,6 +152,34 @@ class AIProvider(ABC):
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
+def time_ai_operation(operation_name: str):
+    """
+    Decorator to measure and log the time taken for AI operations.
+    
+    Args:
+        operation_name: Name of the AI operation being timed
+    
+    Returns:
+        Decorator function that returns (result, elapsed_time)
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            logger.info(f"Starting {operation_name} operation...")
+            
+            try:
+                result = func(*args, **kwargs)
+                elapsed_time = time.time() - start_time
+                logger.info(f"{operation_name} completed successfully in {elapsed_time:.1f} seconds")
+                return result, elapsed_time
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                logger.error(f"{operation_name} failed after {elapsed_time:.1f} seconds: {str(e)}")
+                raise
+                
+        return wrapper
+    return decorator
+
 def make_secure_request(url, api_key, **kwargs):
     """
     Make an HTTP request without exposing API key in error messages.
@@ -206,7 +235,22 @@ def parse_json_response(response_text: str, operation_type: str = "parsing") -> 
         logger.error(f"Invalid JSON returned from AI {operation_type}: {str(e)}")
         logger.error(f"Raw AI {operation_type} response: {response_text}")
         logger.error(f"Cleaned {operation_type} response: {cleaned_data}")
-        raise AIServiceMalformedJSONError(f"AI service returned invalid JSON for {operation_type}: {str(e)}")
+        
+        # Try a more aggressive fix by decoding and re-encoding the string
+        try:
+            logger.info("Attempting aggressive Unicode fix by decoding and re-encoding")
+            # Try to decode and re-encode to fix any encoding issues
+            fixed_data = cleaned_data.encode('utf-8', errors='ignore').decode('utf-8')
+            # Remove any null bytes or other problematic characters
+            fixed_data = fixed_data.replace('\x00', '').replace('\r', '\\r').replace('\n', '\\n')
+            
+            # Try parsing again
+            json.loads(fixed_data)
+            logger.info("Aggressive Unicode fix successful")
+            cleaned_data = fixed_data
+        except (json.JSONDecodeError, UnicodeError) as e2:
+            logger.error(f"Aggressive fix also failed: {str(e2)}")
+            raise AIServiceMalformedJSONError(f"AI service returned invalid JSON for {operation_type}: {str(e)}")
     
     return cleaned_data
 
@@ -579,6 +623,7 @@ def _get_provider() -> AIProvider:
 # =============================================================================
 # PUBLIC API FUNCTIONS
 # =============================================================================
+@time_ai_operation("Receipt image parsing")
 def parse_receipt_image(image_path: str, user_comment: Optional[str] = None) -> str:
     """
     Parse receipt image and return structured data as JSON string.
@@ -589,9 +634,12 @@ def parse_receipt_image(image_path: str, user_comment: Optional[str] = None) -> 
     
     Returns:
         str: JSON string with receipt data
+    
+    Note: This function returns (result, elapsed_time) due to timing decorator
     """
     return _get_provider().parse_receipt_image(image_path, user_comment)
 
+@time_ai_operation("Receipt update with comment")
 def update_receipt_with_comment(original_json: str, user_comment: str) -> str:
     """
     Update receipt data based on user comment.
@@ -602,9 +650,12 @@ def update_receipt_with_comment(original_json: str, user_comment: str) -> str:
     
     Returns:
         str: Updated JSON string with receipt data
+    
+    Note: This function returns (result, elapsed_time) due to timing decorator
     """
     return _get_provider().update_receipt_with_comment(original_json, user_comment)
 
+@time_ai_operation("Voice to text conversion")
 def convert_voice_to_text(voice_file_path: str) -> str:
     """
     Convert voice message file to text.
@@ -614,9 +665,12 @@ def convert_voice_to_text(voice_file_path: str) -> str:
     
     Returns:
         str: Transcribed text from the voice message
+    
+    Note: This function returns (result, elapsed_time) due to timing decorator
     """
     return _get_provider().convert_voice_to_text(voice_file_path)
 
+@time_ai_operation("Voice to receipt parsing")
 def parse_voice_to_receipt(transcribed_text: str) -> str:
     """
     Convert transcribed voice text to structured receipt data.
@@ -626,5 +680,7 @@ def parse_voice_to_receipt(transcribed_text: str) -> str:
     
     Returns:
         str: JSON string with receipt data
+    
+    Note: This function returns (result, elapsed_time) due to timing decorator
     """
     return _get_provider().parse_voice_to_receipt(transcribed_text)
