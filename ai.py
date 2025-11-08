@@ -50,13 +50,13 @@ RECEIPT_JSON_STRUCTURE = """{
 # =============================================================================
 # PROMPT TEMPLATES
 # =============================================================================
-USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: If the user provides additional comments below (inserted as {user_comment}), use those comments to override or adjust specific extracted fields when they conflict with the image. The user comments should take precedence for any conflicting information. Special instructions:
-- DATA OVERRIDE: Use user comments to correct dates, merchant names, amounts, categories, or any other field they explicitly mention.
-- DATE HANDLING: If the user provides a date with day and month but NO YEAR (e.g., "15-05", "May 15", "change date to 15th of May"), use the current year from the current date. Always format as DD-MM-YYYY.
-- CURRENCY CONVERSION: If the user requests currency conversion (e.g., "convert to USD", "convert euros to CZK", "use exchange rate from purchase date"), perform the conversion and return the converted amounts in the JSON. Apply the conversion to both individual item prices and the total_amount. Use realistic exchange rates for the date specified (or current rates if no date specified).
-- PRESERVE ORIGINAL: If currency conversion is requested, you may add a comment in the "text" field noting the original currency and amounts for reference.
+USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: User comments override image data. Apply these rules:
+- Override any field explicitly mentioned by user
+- Date without year: use current year, format as DD-MM-YYYY
+- Currency conversion: apply to all amounts, use exchange rates from date of purchase
+- Note original currency in "text" field if converted
 
-User comments: "{user_comment}"""
+User comments: "{user_comment}\""""
 
 RECEIPT_PARSE_PROMPT_NO_USER_INPUT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}"""
@@ -64,64 +64,35 @@ RECEIPT_PARSE_PROMPT_NO_USER_INPUT = """Analyze this receipt image and extract t
 RECEIPT_PARSE_PROMPT_WITH_USER_INPUT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}
 
-DATE HANDLING INSTRUCTIONS:
-- If the receipt shows a date with day and month but NO YEAR (e.g., "15-05", "May 15", "15/05"), use the current year from the current date provided above.
-- Always convert the final date to DD-MM-YYYY format.
-- Examples: If current date is "02-11-2025" and receipt shows "15-05", return "15-05-2025".
+Date handling: If receipt shows date without year, use current year. Format as DD-MM-YYYY.
+
+{user_adjustment_instructions}\""""
+
+UPDATE_RECEIPT_PROMPT = """Update this JSON based on user comments: "{user_comment}"
+
+Original JSON: {original_json}
+Current date: {current_date}
+
+Return updated JSON with same structure. Update "description" field to note changes.
+Date handling: If user provides date without year, use current year. Format as DD-MM-YYYY.
+Language: Keep original language unless explicitly changed. Description field in ENGLISH.
 
 {user_adjustment_instructions}"""
 
-UPDATE_RECEIPT_PROMPT = """You previously parsed a receipt and generated this JSON:
+VOICE_TO_RECEIPT_PROMPT = """Create receipt from purchase description. Rules:
+- One position if no items specified, use total as price
+- Default date: {current_date}. For dates without year, use current year. Handle relative dates.
+- Default merchant: Unknown
+- Quantity: 1 if not specified
+- Categories from available list
+- Extra context goes to description (direct style, no "user" references)
+- All output in ENGLISH (translate if needed)
 
-{original_json}
+Return JSON structure: {receipt_structure}
 
-The user has provided additional comments or corrections: "{user_comment}"
+User description: "{user_text}\""""
 
-Current date for reference: {current_date}
-
-Please update the JSON data based on the user's comments. Return ONLY the updated JSON object with the same structure as before. Make sure to:
-1. Apply the user's corrections to the appropriate fields
-2. Maintain the same JSON structure
-3. Update the "description" field to mention what was changed based on user comments
-4. If currency conversion is requested, convert all amounts appropriately
-
-DATE HANDLING INSTRUCTIONS:
-- If the user provides a date with day and month but NO YEAR (e.g., "15-05", "May 15", "15/05"), use the current year from the current date provided above.
-- Always convert the final date to DD-MM-YYYY format.
-- Examples: If current date is "02-11-2025" and user mentions "15-05", return "15-05-2025".
-
-Language requirement:
-- Do NOT translate existing fields from the original_json. Preserve their original language and values unless explicitly changed by the user comments.
-- Apply the user's corrections exactly as given. If the user provides new text in another language, keep it as provided (no translation).
-- Write ONLY the "description" field in ENGLISH, appending a concise summary of the changes and any relevant notes. All other fields should remain in their existing language. Keep numeric values and dates unchanged except for requested conversions.
-
-{user_adjustment_instructions}"""
-
-VOICE_TO_RECEIPT_PROMPT = """Based on the text provided by the user describing their purchase, create a receipt structure. Follow these instructions:
-
-- If the user does not mention individual positions in the purchase, create ONE position with the total amount as the price
-- If the date wasn't mentioned, use the current date: {current_date} (in DD-MM-YYYY format)
-- If any required field is missing, make reasonable assumptions based on the context
-- If the merchant name is not specified, use Unknown as the merchant name
-- Choose the most appropriate category from the available list
-- Set quantity to 1 if not specified
-- If the user provides any non-related information to the receipt (context, stories, additional comments), summarize it and put it in the receipt description field. Write the description in a direct, subjectless style without referring to "the user" (e.g., "Not very tasty, caused digestive issues" instead of "The user commented it was not very tasty")
-
-DATE HANDLING INSTRUCTIONS:
-- If the user mentions a date with day and month but NO YEAR (e.g., "15-05", "May 15", "15th of May", "yesterday", "today"), use the current year from the current date provided above.
-- For relative dates like "yesterday", "today", "last week", calculate the actual date using the current date as reference.
-- Always convert the final date to DD-MM-YYYY format.
-- Examples: If current date is "02-11-2025" and user says "May 15", return "15-05-2025".
-
-Language requirement:
-- Always respond in ENGLISH only. If the user's text is in another language, translate any descriptions and merchant names to English. Ensure all JSON string values (description, category, merchant, positions[].description, positions[].category) are English. Numeric values and dates should not be translated.
-
-Return ONLY a JSON object with this structure:
-{receipt_structure}
-
-User's purchase description: "{user_text}" """
-
-VOICE_TRANSCRIPTION_PROMPT = "Please transcribe this voice message into text. Most likely it's either English or Russian language. Return only the transcribed text without any additional formatting or explanation."
+VOICE_TRANSCRIPTION_PROMPT = "Transcribe this voice message to text (English or Russian). Return only the transcribed text."
 
 # =============================================================================
 # BASE AI PROVIDER INTERFACE
