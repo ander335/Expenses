@@ -35,6 +35,7 @@ REM Set your GCP project ID and region
 set PROJECT_ID=gen-lang-client-0006062814
 set REGION=europe-central2
 set REPOSITORY=europe-central2-docker.pkg.dev/%PROJECT_ID%/expenses-bot
+set AI_PROVIDER=gemini
 
 echo.
 REM echo Configuring authentication...
@@ -93,7 +94,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest ^
-        --set-env-vars=TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=gemini ^
+        --set-env-vars=TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=%AI_PROVIDER% ^
         --max-retries=0 ^
         --parallelism=1 ^
         --task-timeout=3600
@@ -121,7 +122,7 @@ if /i "%MODE%"=="job" (
         --project %PROJECT_ID% ^
         --region %REGION% ^
         --set-secrets=TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest ^
-        --set-env-vars=USE_WEBHOOK=true,TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=gemini ^
+        --set-env-vars=USE_WEBHOOK=true,TELEGRAM_ADMIN_ID=98336105,AI_PROVIDER=%AI_PROVIDER% ^
         --platform managed ^
         --allow-unauthenticated ^
         --port 8080 ^
