@@ -17,9 +17,11 @@ def get_persistent_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def format_receipts_list(receipts: list, title: str, requesting_user_id: int = None) -> str:
+def format_receipts_list(receipts: list, title: str, requesting_user_id: int = None, search_date: str = None) -> str:
     """Format a list of receipts for display with a title, showing user names for group receipts."""
     if not receipts:
+        if search_date:
+            return f"No receipts found for {search_date}."
         return "No receipts found."
     
     text = f"{title}:\n\n"
@@ -162,7 +164,7 @@ async def show_receipts_by_date(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info(f"Searching receipts for date {formatted_date} for user {user.id}")
             
             receipts = get_receipts_by_date(update.effective_user.id, formatted_date)
-            formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}", update.effective_user.id)
+            formatted_text = format_receipts_list(receipts, f"Receipts for {date_input}", update.effective_user.id, search_date=date_input)
             
             await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
             
@@ -262,7 +264,7 @@ async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT
         
         # Get receipts for the selected date
         receipts = get_receipts_by_date(user_id, formatted_date)
-        formatted_text = format_receipts_list(receipts, f"Receipts for {display_date}", user_id)
+        formatted_text = format_receipts_list(receipts, f"Receipts for {display_date}", user_id, search_date=display_date)
         
         await query.edit_message_text(formatted_text, reply_markup=get_persistent_keyboard())
     
