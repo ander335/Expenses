@@ -8,7 +8,7 @@
 ## Writing code
 - When writing new code, add detailed logging using the `logger` object from `logger_config.py`.
 - Writing code, make sure there is no similar logic, functions or blocks. If there is any, try to generalize it and use in both places.
-- Do not provide long function annotation comments instead use one line comments.
+- Keep function docstrings concise: use single-line comments only, no multi-line docstrings with Args/Returns sections.
 - Do not test bot functionality by writing simple scripts. Deploy it to cloud right away instead.
 
 ## Troubleshooting

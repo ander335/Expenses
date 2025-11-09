@@ -105,17 +105,17 @@ class AIProvider(ABC):
     """Abstract base class for AI service providers."""
     
     @abstractmethod
-    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None) -> str:
+    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
         """Parse receipt image and return JSON string."""
         pass
     
     @abstractmethod
-    def update_receipt_with_comment(self, original_json: str, user_comment: str) -> str:
+    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Update receipt data based on user comment."""
         pass
     
     @abstractmethod
-    def convert_voice_to_text(self, voice_file_path: str) -> str:
+    def convert_voice_to_text(self, voice_file_path: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Convert voice message to text."""
         pass
     
@@ -308,7 +308,7 @@ class GeminiProvider(AIProvider):
             logger.error(redact_sensitive_data(error_message))
             raise
     
-    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None) -> str:
+    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
         """Parse receipt image using Gemini."""
         logger.info(f"Reading receipt image from {image_path}")
         user_comment_text = user_comment.strip() if user_comment else ""
@@ -351,13 +351,13 @@ class GeminiProvider(AIProvider):
         }
 
         logger.info("Sending request to Gemini API")
-        result = self._make_request(payload)
+        result = self._make_request(payload, cancel_event)
         logger.info("Successfully received response from Gemini API")
         
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
         return parse_json_response(response_text, "parsing")
     
-    def update_receipt_with_comment(self, original_json: str, user_comment: str) -> str:
+    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Update receipt data with user comment using Gemini."""
         logger.info(f"Updating receipt data with user comment: {user_comment}")
         
@@ -382,13 +382,13 @@ class GeminiProvider(AIProvider):
         }
 
         logger.info("Sending update request to Gemini API")
-        result = self._make_request(payload)
+        result = self._make_request(payload, cancel_event)
         logger.info("Successfully received update response from Gemini API")
         
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
         return parse_json_response(response_text, "update")
     
-    def convert_voice_to_text(self, voice_file_path: str) -> str:
+    def convert_voice_to_text(self, voice_file_path: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Convert voice message to text using Gemini."""
         logger.info(f"Converting voice message to text from {voice_file_path}")
         
@@ -409,7 +409,7 @@ class GeminiProvider(AIProvider):
         }
 
         logger.info("Sending voice transcription request to Gemini API")
-        result = self._make_request(payload)
+        result = self._make_request(payload, cancel_event)
         logger.info("Successfully received voice transcription response from Gemini API")
         
         transcribed_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -497,7 +497,7 @@ class OpenAIProvider(AIProvider):
             logger.error(redact_sensitive_data(error_message))
             raise
     
-    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None) -> str:
+    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
         """Parse receipt image using OpenAI."""
         logger.info(f"Reading receipt image from {image_path}")
         user_comment_text = user_comment.strip() if user_comment else ""
@@ -543,13 +543,13 @@ class OpenAIProvider(AIProvider):
 
         logger.info("Sending request to OpenAI API")
         logger.debug(f"Using vision model: {self.vision_model} for image recognition")
-        result = self._make_request(messages, model=self.vision_model)
+        result = self._make_request(messages, model=self.vision_model, cancel_event=cancel_event)
         logger.info("Successfully received response from OpenAI API")
         
         response_text = result["choices"][0]["message"]["content"]
         return parse_json_response(response_text, "parsing")
     
-    def update_receipt_with_comment(self, original_json: str, user_comment: str) -> str:
+    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Update receipt data with user comment using OpenAI."""
         logger.info(f"Updating receipt data with user comment: {user_comment}")
         
@@ -569,13 +569,13 @@ class OpenAIProvider(AIProvider):
         ]
 
         logger.info("Sending update request to OpenAI API")
-        result = self._make_request(messages, model=self.text_model)
+        result = self._make_request(messages, model=self.text_model, cancel_event=cancel_event)
         logger.info("Successfully received update response from OpenAI API")
         
         response_text = result["choices"][0]["message"]["content"]
         return parse_json_response(response_text, "update")
     
-    def convert_voice_to_text(self, voice_file_path: str) -> str:
+    def convert_voice_to_text(self, voice_file_path: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Convert voice message to text using OpenAI Whisper."""
         logger.info(f"Converting voice message to text from {voice_file_path}")
         logger.debug(f"Using {self.voice_model} model for speech recognition")
@@ -595,6 +595,9 @@ class OpenAIProvider(AIProvider):
             }
             
             try:
+                # Note: For Whisper API, we can't use the cancellable request mechanism
+                # because it uses multipart form data. The cancellation will be checked
+                # before and after the request.
                 response = requests.post(url, headers=headers, files=files)
                 response.raise_for_status()
                 
@@ -663,19 +666,19 @@ def _get_provider() -> AIProvider:
 # PUBLIC API FUNCTIONS
 # =============================================================================
 @time_ai_operation("Receipt image parsing")
-def parse_receipt_image(image_path: str, user_comment: Optional[str] = None) -> str:
+def parse_receipt_image(image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
     """Parse receipt image and return structured data as JSON string."""
-    return _get_provider().parse_receipt_image(image_path, user_comment)
+    return _get_provider().parse_receipt_image(image_path, user_comment, cancel_event)
 
 @time_ai_operation("Receipt update with comment")
-def update_receipt_with_comment(original_json: str, user_comment: str) -> str:
+def update_receipt_with_comment(original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
     """Update receipt data based on user comment."""
-    return _get_provider().update_receipt_with_comment(original_json, user_comment)
+    return _get_provider().update_receipt_with_comment(original_json, user_comment, cancel_event)
 
 @time_ai_operation("Voice to text conversion")
-def convert_voice_to_text(voice_file_path: str) -> str:
+def convert_voice_to_text(voice_file_path: str, cancel_event: Optional[threading.Event] = None) -> str:
     """Convert voice message file to text."""
-    return _get_provider().convert_voice_to_text(voice_file_path)
+    return _get_provider().convert_voice_to_text(voice_file_path, cancel_event)
 
 @time_ai_operation("Voice to receipt parsing")
 def parse_voice_to_receipt(transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
