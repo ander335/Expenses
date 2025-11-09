@@ -8,6 +8,7 @@ import json
 import base64
 import requests
 import time
+import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional, Tuple
@@ -19,6 +20,10 @@ from logger_config import logger, redact_sensitive_data
 # =============================================================================
 class AIServiceMalformedJSONError(Exception):
     """Raised when the AI service returns malformed JSON that cannot be parsed."""
+    pass
+
+class OperationCancelledException(Exception):
+    """Raised when an AI operation is cancelled via threading event."""
     pass
 
 # =============================================================================
@@ -115,23 +120,21 @@ class AIProvider(ABC):
         pass
     
     @abstractmethod
-    def parse_voice_to_receipt(self, transcribed_text: str) -> str:
+    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Convert transcribed voice text to receipt structure."""
         pass
 
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
+def check_cancellation(cancel_event: Optional[threading.Event], operation_name: str = "operation"):
+    """Check if operation should be cancelled and raise exception if so."""
+    if cancel_event and cancel_event.is_set():
+        logger.info(f"Operation '{operation_name}' cancelled by user request")
+        raise OperationCancelledException(f"Operation '{operation_name}' was cancelled")
+
 def time_ai_operation(operation_name: str):
-    """
-    Decorator to measure and log the time taken for AI operations.
-    
-    Args:
-        operation_name: Name of the AI operation being timed
-    
-    Returns:
-        Decorator function that returns (result, elapsed_time)
-    """
+    """Decorator to measure and log AI operation timing."""
     def decorator(func):
         def wrapper(*args, **kwargs):
             start_time = time.time()
@@ -150,14 +153,61 @@ def time_ai_operation(operation_name: str):
         return wrapper
     return decorator
 
-def make_secure_request(url, api_key, **kwargs):
-    """
-    Make an HTTP request without exposing API key in error messages.
-    """
+def make_cancellable_request(url, headers, json_data, cancel_event: Optional[threading.Event] = None, timeout=None):
+    """Make HTTP request that can be cancelled via threading event."""
+    check_cancellation(cancel_event, "API request")
+    
+    result_container = {}
+    exception_container = {}
+    
+    def make_request():
+        try:
+            if timeout is not None:
+                response = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            else:
+                response = requests.post(url, headers=headers, json=json_data)
+            response.raise_for_status()
+            result_container['response'] = response
+        except Exception as e:
+            exception_container['error'] = e
+    
+    # Start the request in a separate thread
+    request_thread = threading.Thread(target=make_request, daemon=True)
+    request_thread.start()
+    
+    # Monitor for cancellation while request is running
+    check_interval = 0.05  # Check every 50ms
+    while request_thread.is_alive():
+        if cancel_event and cancel_event.is_set():
+            # Request is cancelled but we can't actually stop the HTTP request
+            # However, we can refuse to use its result
+            logger.info("Request cancellation detected during HTTP request")
+            raise OperationCancelledException("Request was cancelled during execution")
+        
+        request_thread.join(timeout=check_interval)
+    
+    # Handle results
+    if 'error' in exception_container:
+        raise exception_container['error']
+    
+    if 'response' in result_container:
+        return result_container['response']
+    
+    raise RuntimeError("Request completed but no result available")
+
+def make_secure_request(url, api_key, cancel_event: Optional[threading.Event] = None, **kwargs):
+    """Make HTTP request without exposing API key in error messages."""
+    
     secure_url = f"{url}?key={api_key}"
     try:
-        response = requests.post(secure_url, **kwargs)
-        response.raise_for_status()
+        # Extract headers and json from kwargs for cancellable request
+        headers = kwargs.get('headers', {})
+        json_data = kwargs.get('json', None)
+        timeout = kwargs.get('timeout')
+        
+        # Use cancellable request for better responsiveness
+        response = make_cancellable_request(secure_url, headers, json_data, cancel_event, timeout)
+        
         return response
     except requests.RequestException as e:
         # Create a new exception without the sensitive URL
@@ -168,17 +218,7 @@ def make_secure_request(url, api_key, **kwargs):
         raise requests.RequestException(f"API request failed: {error_msg}")
 
 def parse_json_response(response_text: str, operation_type: str = "parsing") -> str:
-    """
-    Common function to parse and clean JSON response from AI services.
-    Handles code block markers and validates JSON structure.
-    
-    Args:
-        response_text: The text response from AI service
-        operation_type: String describing the operation for logging
-    
-    Returns:
-        str: Cleaned JSON string
-    """
+    """Parse and clean JSON response from AI services."""
     parsed_data = response_text.strip()
     logger.debug(f"Successfully extracted text content from AI {operation_type} response")
     
@@ -250,7 +290,7 @@ class GeminiProvider(AIProvider):
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
     
-    def _make_request(self, payload: dict) -> dict:
+    def _make_request(self, payload: dict, cancel_event: Optional[threading.Event] = None) -> dict:
         """Make a request to Gemini API."""
         headers = {"Content-Type": "application/json"}
         
@@ -258,6 +298,7 @@ class GeminiProvider(AIProvider):
             response = make_secure_request(
                 self.api_url,
                 self.api_key,
+                cancel_event=cancel_event,
                 headers=headers,
                 json=payload
             )
@@ -376,7 +417,7 @@ class GeminiProvider(AIProvider):
         
         return transcribed_text
     
-    def parse_voice_to_receipt(self, transcribed_text: str) -> str:
+    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Convert transcribed voice text to receipt structure using Gemini."""
         logger.info(f"Converting voice text to receipt structure: {transcribed_text[:100]}...")
         
@@ -400,7 +441,7 @@ class GeminiProvider(AIProvider):
         }
 
         logger.info("Sending voice-to-receipt request to Gemini API")
-        result = self._make_request(payload)
+        result = self._make_request(payload, cancel_event=cancel_event)
         logger.info("Successfully received voice-to-receipt response from Gemini API")
         
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -419,12 +460,13 @@ class OpenAIProvider(AIProvider):
             raise ValueError("OPENAI_API_KEY environment variable is not set")
         
         # Model selection optimized for quality over speed:
-        self.vision_model = 'gpt-4.1-mini'
+        self.vision_model = 'gpt-4.1'
         self.text_model = self.vision_model
+        self.voice_model = 'whisper-1'
         
-        logger.info(f"OpenAI Provider initialized - Vision model: {self.vision_model}, Text model: {self.text_model}")
+        logger.info(f"OpenAI Provider initialized - Vision model: {self.vision_model}, Text model: {self.text_model}, Voice model: {self.voice_model}")
     
-    def _make_request(self, messages: list, max_tokens: int = 4000, model: str = None) -> dict:
+    def _make_request(self, messages: list, max_tokens: int = 4000, model: str = None, cancel_event: Optional[threading.Event] = None) -> dict:
         """Make a request to OpenAI API."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -441,12 +483,14 @@ class OpenAIProvider(AIProvider):
         }
         
         try:
-            response = requests.post(
-                self.api_url,
-                headers=headers,
-                json=payload
+            response = make_cancellable_request(
+                self.api_url, 
+                headers, 
+                payload, 
+                cancel_event, 
+                None
             )
-            response.raise_for_status()
+            
             return response.json()
         except requests.RequestException as e:
             error_message = f"Error calling OpenAI API: {str(e)}"
@@ -534,7 +578,7 @@ class OpenAIProvider(AIProvider):
     def convert_voice_to_text(self, voice_file_path: str) -> str:
         """Convert voice message to text using OpenAI Whisper."""
         logger.info(f"Converting voice message to text from {voice_file_path}")
-        logger.debug("Using whisper-1 model for speech recognition (fastest + mid quality)")
+        logger.debug(f"Using {self.voice_model} model for speech recognition")
         
         # Use OpenAI's Whisper API for transcription
         url = "https://api.openai.com/v1/audio/transcriptions"
@@ -546,7 +590,7 @@ class OpenAIProvider(AIProvider):
         with open(voice_file_path, "rb") as audio_file:
             files = {
                 "file": audio_file,
-                "model": (None, "whisper-1"),  # Fastest Whisper model for mid-quality speech recognition
+                "model": (None, self.voice_model),
                 "response_format": (None, "text")
             }
             
@@ -564,7 +608,7 @@ class OpenAIProvider(AIProvider):
                 logger.error(redact_sensitive_data(error_message))
                 raise
     
-    def parse_voice_to_receipt(self, transcribed_text: str) -> str:
+    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
         """Convert transcribed voice text to receipt structure using OpenAI."""
         logger.info(f"Converting voice text to receipt structure: {transcribed_text[:100]}...")
         
@@ -584,7 +628,7 @@ class OpenAIProvider(AIProvider):
 
         logger.info("Sending voice-to-receipt request to OpenAI API")
         logger.debug(f"Using text model: {self.text_model} for voice-to-receipt conversion")
-        result = self._make_request(messages, model=self.text_model)
+        result = self._make_request(messages, model=self.text_model, cancel_event=cancel_event)
         logger.info("Successfully received voice-to-receipt response from OpenAI API")
         
         response_text = result["choices"][0]["message"]["content"]
@@ -594,7 +638,7 @@ class OpenAIProvider(AIProvider):
 # PROVIDER FACTORY AND PUBLIC INTERFACE
 # =============================================================================
 def get_ai_provider() -> AIProvider:
-    """Factory function to get the appropriate AI provider based on configuration."""
+    """Get appropriate AI provider based on configuration."""
     if AI_PROVIDER == 'openai':
         logger.info("Using OpenAI AI provider")
         return OpenAIProvider()
@@ -620,62 +664,20 @@ def _get_provider() -> AIProvider:
 # =============================================================================
 @time_ai_operation("Receipt image parsing")
 def parse_receipt_image(image_path: str, user_comment: Optional[str] = None) -> str:
-    """
-    Parse receipt image and return structured data as JSON string.
-    
-    Args:
-        image_path: Path to the receipt image file
-        user_comment: Optional user comment to override/adjust extracted data
-    
-    Returns:
-        str: JSON string with receipt data
-    
-    Note: This function returns (result, elapsed_time) due to timing decorator
-    """
+    """Parse receipt image and return structured data as JSON string."""
     return _get_provider().parse_receipt_image(image_path, user_comment)
 
 @time_ai_operation("Receipt update with comment")
 def update_receipt_with_comment(original_json: str, user_comment: str) -> str:
-    """
-    Update receipt data based on user comment.
-    
-    Args:
-        original_json: Original JSON string from previous parsing
-        user_comment: User's correction or adjustment comment
-    
-    Returns:
-        str: Updated JSON string with receipt data
-    
-    Note: This function returns (result, elapsed_time) due to timing decorator
-    """
+    """Update receipt data based on user comment."""
     return _get_provider().update_receipt_with_comment(original_json, user_comment)
 
 @time_ai_operation("Voice to text conversion")
 def convert_voice_to_text(voice_file_path: str) -> str:
-    """
-    Convert voice message file to text.
-    
-    Args:
-        voice_file_path: Path to the voice message file
-    
-    Returns:
-        str: Transcribed text from the voice message
-    
-    Note: This function returns (result, elapsed_time) due to timing decorator
-    """
+    """Convert voice message file to text."""
     return _get_provider().convert_voice_to_text(voice_file_path)
 
 @time_ai_operation("Voice to receipt parsing")
-def parse_voice_to_receipt(transcribed_text: str) -> str:
-    """
-    Convert transcribed voice text to structured receipt data.
-    
-    Args:
-        transcribed_text: Text transcribed from voice message
-    
-    Returns:
-        str: JSON string with receipt data
-    
-    Note: This function returns (result, elapsed_time) due to timing decorator
-    """
-    return _get_provider().parse_voice_to_receipt(transcribed_text)
+def parse_voice_to_receipt(transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
+    """Convert transcribed voice text to structured receipt data."""
+    return _get_provider().parse_voice_to_receipt(transcribed_text, cancel_event)

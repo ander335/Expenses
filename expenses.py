@@ -281,7 +281,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update, context):
         return
     
-    reminder_text = f"👋 To add an expense, please send me:\n• 📷 A photo of your receipt, or\n• 🎙️ A voice message describing your purchase, or\n• ✍️ Use /add followed by a text description (e.g., /add Bought sushi for 20 USD at Kyoto)\n\n💡 Tip: Add a caption to your photo/voice to correct any details like date, amount, merchant name, or request currency conversion (e.g., 'convert to USD').\n\n{HELP_TEXT}"
+    reminder_text = HELP_TEXT
     
     await update.message.reply_text(reminder_text, reply_markup=get_persistent_keyboard())
 
