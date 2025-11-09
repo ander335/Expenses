@@ -119,12 +119,16 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     try:
-        if delete_receipt(receipt_id, update.effective_user.id):
-            await update.message.reply_text(f"Receipt {receipt_id} deleted successfully!", reply_markup=get_persistent_keyboard())
-        else:
-            await update.message.reply_text(f"Receipt {receipt_id} not found or not owned by you.", reply_markup=get_persistent_keyboard())
+        # Check if user is admin - import here to avoid circular imports
+        from auth_data import TELEGRAM_ADMIN_ID
+        is_admin = user.id == TELEGRAM_ADMIN_ID
+        
+        result = delete_receipt(receipt_id, user.id, is_admin=is_admin)
+        await update.message.reply_text(result['message'], reply_markup=get_persistent_keyboard())
+        
     except Exception as e:
-        await update.message.reply_text(f"Failed to delete receipt: {e}", reply_markup=get_persistent_keyboard())
+        logger.error(f"Error deleting receipt {receipt_id} for user {user.id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Failed to delete receipt: {str(e)}", reply_markup=get_persistent_keyboard())
 
 async def show_receipts_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
     user = update.effective_user

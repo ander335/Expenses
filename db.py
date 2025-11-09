@@ -241,20 +241,54 @@ def get_last_n_receipts(user_id: int, n: int) -> List[Receipt]:
     finally:
         session.close()
 
-def delete_receipt(receipt_id: int, user_id: int) -> bool:
-    """Delete a receipt by ID. Returns True if successful, False if receipt not found or not owned by user."""
+def delete_receipt(receipt_id: int, user_id: int, is_admin: bool = False) -> dict:
+    """
+    Delete a receipt by ID. 
+    Returns dict with 'success': bool and 'message': str indicating the result.
+    
+    Args:
+        receipt_id: The ID of the receipt to delete
+        user_id: The ID of the user requesting deletion
+        is_admin: True if the user is an admin (can delete any receipt)
+    """
     session = Session()
     try:
-        receipt = session.query(Receipt)\
-            .filter_by(receipt_id=receipt_id, user_id=user_id)\
-            .first()
-        if not receipt:
-            return False
+        # If admin, search for any receipt with the ID
+        if is_admin:
+            receipt = session.query(Receipt)\
+                .filter_by(receipt_id=receipt_id)\
+                .first()
+            if not receipt:
+                return {'success': False, 'message': f'Receipt {receipt_id} not found.'}
+            
+            # Log admin action for security audit
+            if receipt.user_id != user_id:
+                receipt_owner = session.query(User).filter_by(user_id=receipt.user_id).first()
+                owner_name = receipt_owner.name if receipt_owner else f"User {receipt.user_id}"
+                logger.warning(f"ADMIN ACTION: User {user_id} (admin) deleted receipt {receipt_id} belonging to {owner_name} (user_id: {receipt.user_id})")
+            else:
+                logger.info(f"Admin {user_id} deleted their own receipt {receipt_id}")
+        else:
+            # Regular user - only allow deletion of own receipts
+            receipt = session.query(Receipt)\
+                .filter_by(receipt_id=receipt_id, user_id=user_id)\
+                .first()
+            if not receipt:
+                # Check if receipt exists but belongs to someone else
+                other_receipt = session.query(Receipt)\
+                    .filter_by(receipt_id=receipt_id)\
+                    .first()
+                if other_receipt:
+                    logger.warning(f"SECURITY: User {user_id} attempted to delete receipt {receipt_id} belonging to user {other_receipt.user_id}")
+                    return {'success': False, 'message': f'Receipt {receipt_id} not found or you do not have permission to delete it.'}
+                else:
+                    return {'success': False, 'message': f'Receipt {receipt_id} not found.'}
+        
         session.delete(receipt)
         session.commit()
-        logger.info(f"Receipt {receipt_id} deleted successfully")
+        logger.info(f"Receipt {receipt_id} deleted successfully by user {user_id}")
+        return {'success': True, 'message': f'Receipt {receipt_id} deleted successfully!'}
             
-        return True
     except Exception:
         session.rollback()
         raise
