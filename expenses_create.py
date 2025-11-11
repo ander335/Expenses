@@ -234,13 +234,19 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = receipt_data.get(user_id)
     
     if not user_data:
-        await query.edit_message_text("Sorry, I couldn't find your receipt data. Please try again.")
+        # Remove buttons from original message but keep the content
+        await query.edit_message_reply_markup(reply_markup=None)
+        # Send separate error message
+        await query.message.reply_text("❌ Sorry, I couldn't find your receipt data. Please try again.", reply_markup=get_persistent_keyboard())
         return ConversationHandler.END
     
     # Extract action and timestamp from callback data
     callback_parts = query.data.split('_')
     if len(callback_parts) != 2:
-        await query.edit_message_text("⚠️ This button is no longer active. Please use the buttons from the latest message.")
+        # Remove buttons from original message but keep the content
+        await query.edit_message_reply_markup(reply_markup=None)
+        # Send separate error message
+        await query.message.reply_text("⚠️ This button is no longer active. Please use the buttons from the latest message.", reply_markup=get_persistent_keyboard())
         return ConversationHandler.END
     
     action, timestamp = callback_parts
@@ -248,7 +254,10 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check if this is the latest message
     if timestamp != latest_timestamp:
-        await query.edit_message_text("⚠️ This button is no longer active. Please use the buttons from the latest message.")
+        # Remove buttons from original message but keep the content
+        await query.edit_message_reply_markup(reply_markup=None)
+        # Send separate error message
+        await query.message.reply_text("⚠️ This button is no longer active. Please use the buttons from the latest message.", reply_markup=get_persistent_keyboard())
         return ConversationHandler.END
     
     if action == "approve":
@@ -264,11 +273,17 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             receipt_id = add_receipt(receipt)
             logger.info(f"Receipt saved successfully with ID: {receipt_id}")
             
-            # Remove buttons and show success message
-            await query.edit_message_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
+            # Remove buttons from original message but keep the content
+            await query.edit_message_reply_markup(reply_markup=None)
+            logger.info(f"Removed approval buttons from receipt summary message for user {user_id}")
+            # Send separate approval message
+            await query.message.reply_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
         except Exception as e:
             logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"Failed to save receipt: {e}", reply_markup=get_persistent_keyboard())
+            # Remove buttons from original message but keep the content
+            await query.edit_message_reply_markup(reply_markup=None)
+            # Send separate error message
+            await query.message.reply_text(f"❌ Failed to save receipt: {e}", reply_markup=get_persistent_keyboard())
         
         # Clean up stored data
         if user_id in receipt_data:
@@ -277,8 +292,11 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif action == "reject":
         logger.info(f"Receipt rejected by user {user_id}")
-        # Remove buttons and show rejection message
-        await query.edit_message_text("❌ Receipt rejected. Please try again with a clearer photo if needed.", reply_markup=get_persistent_keyboard())
+        # Remove buttons from original message but keep the content
+        await query.edit_message_reply_markup(reply_markup=None)
+        logger.info(f"Removed approval buttons from receipt summary message for user {user_id}")
+        # Send separate rejection message
+        await query.message.reply_text("❌ Receipt rejected. Please try again with a clearer photo if needed.", reply_markup=get_persistent_keyboard())
         
         # Clean up stored data
         if user_id in receipt_data:
@@ -286,7 +304,10 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     else:
-        await query.edit_message_text("⚠️ Unknown action. Please use the buttons from the latest message.")
+        # Remove buttons from original message but keep the content
+        await query.edit_message_reply_markup(reply_markup=None)
+        # Send separate error message
+        await query.message.reply_text("⚠️ Unknown action. Please use the buttons from the latest message.", reply_markup=get_persistent_keyboard())
         return ConversationHandler.END
 
 async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
