@@ -57,7 +57,7 @@ RECEIPT_JSON_STRUCTURE = """{
 USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: User comments override image data. Apply these rules:
 - Override any field explicitly mentioned by user
 - Date without year: use current year, format as DD-MM-YYYY
-- Currency conversion: apply to all amounts, use exchange rates from date of purchase
+- Currency conversion: apply to all amounts, use exchange rates from date of purchase. Include the exchange rate used in the receipt description (e.g., "Converted from EUR to CZK at rate 1 EUR = 25.2 CZK")
 - Note original currency in "text" field if converted
 
 User comments: "{user_comment}\""""
@@ -80,6 +80,7 @@ Current date: {current_date}
 Return ONLY the updated JSON object, nothing else. Update "description" field to note changes.
 Date handling: If user provides date without year, use current year. Format as DD-MM-YYYY.
 Language: Keep original language unless explicitly changed. Description field in ENGLISH.
+Currency conversion: If requested, apply to all amounts and include the exchange rate used in the description (e.g., "Converted from EUR to CZK at rate 1 EUR = 25.2 CZK").
 
 {user_adjustment_instructions}\""""
 
@@ -91,6 +92,7 @@ VOICE_TO_RECEIPT_PROMPT = """Create receipt from purchase description. Rules:
 - Categories from available list
 - Extra context goes to description (direct style, no "user" references)
 - All output in ENGLISH (translate if needed)
+- Currency conversion: If requested, apply to all amounts and include the exchange rate used in the description (e.g., "Converted from EUR to CZK at rate 1 EUR = 25.2 CZK")
 
 Return ONLY a JSON object with this structure: {receipt_structure}
 
