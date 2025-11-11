@@ -1,6 +1,9 @@
 auth_data/
 expenses.db
 expenses_backup.db
+expenses_temp.db
+*.db.temp
+*.db.recovery
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
