@@ -2,7 +2,7 @@
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler, CallbackQueryHandler
-from auth_data import BOT_TOKEN, TELEGRAM_ADMIN_ID
+from auth_data import BOT_TOKEN, TELEGRAM_ADMIN_ID, AI_PROVIDER
 
 import os
 import requests
@@ -176,7 +176,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db_user = User(user_id=user.id, name=user.full_name)
     get_or_create_user(db_user)
-    welcome_text = f'Hello {user.full_name}! I am your Expenses bot.\n\n{HELP_TEXT}'
+    
+    # Add AI provider info to welcome message
+    ai_provider_name = "Gemini AI" if AI_PROVIDER == "gemini" else "OpenAI"
+    welcome_text = f'Hello {user.full_name}! I am your Expenses bot powered by {ai_provider_name}.\n\n{HELP_TEXT}'
     await update.message.reply_text(welcome_text, reply_markup=get_persistent_keyboard())
 
 async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
