@@ -68,19 +68,8 @@ def get_persistent_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFAULT_TYPE, *, voice_file_path: str, heard_prefix: str, next_hint: str) -> str:
-    """Shared helper: transcribe a voice file and immediately inform the user.
-
-    Args:
-        update: Telegram update
-        context: Telegram context
-        voice_file_path: Local path to the downloaded .ogg voice file
-        heard_prefix: Prefix for the immediate feedback line (e.g., "🎙️ I heard:" or "🎙️ Your voice comment:")
-        next_hint: Follow-up hint displayed on a new line to set expectations (e.g., "🛠️ Creating a receipt summary...")
-
-    Returns:
-        The transcribed text
-    """
+async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFAULT_TYPE, *, voice_file_path: str, heard_prefix: str, next_hint: str, processing_message_id: int = None) -> str:
+    """Transcribe voice file and replace processing message with transcription result."""
     logger.info(f"Starting transcription for file: {voice_file_path}")
     transcribed_text, transcription_time = convert_voice_to_text(voice_file_path)
     logger.info(f"Transcription result: {transcribed_text}")
@@ -88,11 +77,22 @@ async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFA
     # Inform user immediately; failure here shouldn't break the flow
     timing_text = f"(transcription took {transcription_time:.1f}s)"
     immediate_message = f"{heard_prefix} \"{transcribed_text}\" {timing_text}\n\n{next_hint}" if next_hint else f"{heard_prefix} \"{transcribed_text}\" {timing_text}"
+    
     try:
-        await update.message.reply_text(immediate_message)
-        logger.info("Sent immediate transcription feedback to user")
+        if processing_message_id:
+            # Replace the existing processing message
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=processing_message_id,
+                text=immediate_message
+            )
+            logger.info("Replaced processing message with transcription feedback")
+        else:
+            # Fall back to sending a new message if no message ID provided
+            await update.message.reply_text(immediate_message)
+            logger.info("Sent immediate transcription feedback to user")
     except Exception as e:
-        logger.warning(f"Failed to send immediate transcription message: {str(e)}")
+        logger.warning(f"Failed to send/edit transcription message: {str(e)}")
 
     return transcribed_text
 
@@ -396,16 +396,17 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(f"❌ {e.user_message}")
             return ConversationHandler.END
 
-        await update.message.reply_text("🎙️ Processing your voice receipt...")
+        processing_message = await update.message.reply_text("🎙️ Processing your voice receipt...")
 
         try:
-            # Transcribe and notify user immediately
+            # Transcribe and notify user immediately, replacing the processing message
             transcribed_text = await transcribe_voice_and_notify(
                 update,
                 context,
                 voice_file_path=voice_file_path,
                 heard_prefix="🎙️ I heard:",
-                next_hint="🛠️ Creating a receipt summary..."
+                next_hint="🛠️ Creating a receipt summary...",
+                processing_message_id=processing_message.message_id
             )
             
             # Sanitize transcribed text
@@ -491,16 +492,17 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(f"❌ {e.user_message}")
             return ConversationHandler.END
 
-        await update.message.reply_text("🎙️ Processing your voice message...")
+        processing_message = await update.message.reply_text("Processing your voice message...")
         
         try:
-            # Transcribe and notify user immediately
+            # Transcribe and notify user immediately, replacing the processing message
             user_comment = await transcribe_voice_and_notify(
                 update,
                 context,
                 voice_file_path=voice_file_path,
                 heard_prefix="🎙️ Your voice comment:",
-                next_hint="🛠️ Applying your changes to the receipt..."
+                next_hint="🛠️ Applying your changes to the receipt...",
+                processing_message_id=processing_message.message_id
             )
             
             # Sanitize transcribed text
