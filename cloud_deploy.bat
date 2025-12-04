@@ -35,7 +35,7 @@ REM Set your GCP project ID and region
 set PROJECT_ID=gen-lang-client-0006062814
 set REGION=europe-central2
 set REPOSITORY=europe-central2-docker.pkg.dev/%PROJECT_ID%/expenses-bot
-set AI_PROVIDER=openai
+set AI_PROVIDER=gemini
 
 echo.
 REM echo Configuring authentication...
