@@ -311,8 +311,8 @@ class GeminiProvider(AIProvider):
             raise
     
     def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
-        """Parse receipt image using Gemini."""
-        logger.info(f"Reading receipt image from {image_path}")
+        """Parse receipt image or PDF using Gemini."""
+        logger.info(f"Reading receipt file from {image_path}")
         user_comment_text = user_comment.strip() if user_comment else ""
         if user_comment_text:
             logger.info(f"Processing receipt with user comment: {user_comment_text}")
@@ -335,17 +335,34 @@ class GeminiProvider(AIProvider):
                 current_date=current_date
             )
         
-        # Read and encode image
-        with open(image_path, "rb") as img_file:
-            image_bytes = img_file.read()
-            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        logger.debug("Image successfully encoded to base64")
+        # Determine MIME type based on file extension
+        file_ext = os.path.splitext(image_path)[1].lower()
+        if file_ext == '.pdf':
+            mime_type = "application/pdf"
+        elif file_ext in ['.jpg', '.jpeg']:
+            mime_type = "image/jpeg"
+        elif file_ext == '.png':
+            mime_type = "image/png"
+        elif file_ext == '.gif':
+            mime_type = "image/gif"
+        elif file_ext == '.webp':
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"  # Default fallback
+        
+        logger.debug(f"Detected MIME type: {mime_type} for file extension: {file_ext}")
+        
+        # Read and encode file
+        with open(image_path, "rb") as file:
+            file_bytes = file.read()
+            file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+        logger.debug(f"File successfully encoded to base64 (size: {len(file_bytes)} bytes)")
 
         payload = {
             "contents": [
                 {
                     "parts": [
-                        {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}},
+                        {"inline_data": {"mime_type": mime_type, "data": file_b64}},
                         {"text": prompt}
                     ]
                 }

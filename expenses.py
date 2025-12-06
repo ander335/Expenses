@@ -21,7 +21,7 @@ from security_utils import (
 
 # Import the new modular components
 from expenses_create import (
-    handle_photo, handle_voice_receipt, handle_approval, handle_user_comment, 
+    handle_photo, handle_receipt_file, handle_voice_receipt, handle_approval, handle_user_comment, 
     handle_voice_comment, add_text_receipt, AWAITING_APPROVAL
 )
 from expenses_view import (
@@ -50,7 +50,7 @@ def get_persistent_keyboard():
 # Common help text for the bot
 HELP_TEXT = (
     "💰 How to add expenses:\n"
-    "• 📷 Send a photo of your receipt. Add captions like \"Total: 15.50, Date: 25-10-2024\" to correct details\n"
+    "• 📷 Send a photo or receipt file (JPEG/PDF). Add captions like \"Total: 15.50, Date: 25-10-2024\" to correct details\n"
     "• 🎙️ Send a voice message describing your purchase (e.g., \"Bought groceries for 25 euros at Tesco yesterday\")\n"
     "• ✍️ /add TEXT - add from text description (e.g., /add Lunch at restaurant for 12.50 EUR)\n"
     "\n📋 View expenses:\n"
@@ -440,6 +440,7 @@ def main():
         entry_points=[
             MessageHandler(filters.PHOTO, lambda update, context: handle_photo(update, context, check_user_access)),
             MessageHandler(filters.VOICE, lambda update, context: handle_voice_receipt(update, context, check_user_access)),
+            MessageHandler(filters.Document.PDF | filters.Document.MimeType("image/jpeg"), lambda update, context: handle_receipt_file(update, context, check_user_access, file_type="document")),
             CommandHandler('add', lambda update, context: add_text_receipt(update, context, check_user_access)),
         ],
         states={

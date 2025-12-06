@@ -9,7 +9,7 @@ from parse import parse_receipt_from_gemini
 from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError
 from security_utils import (
     SecurityException, file_handler, InputValidator,
-    ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES
+    ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
 )
 from db import add_receipt, get_or_create_user, User
 
@@ -136,36 +136,63 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
     return AWAITING_APPROVAL
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
+    """Handler for photo receipt uploads."""
+    return await handle_receipt_file(update, context, check_user_access_func, file_type="photo")
+
+
+async def handle_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func, file_type: str = "document"):
+    """
+    Generic handler for receipt files (photos, PDFs, JPEGs).
+    file_type: 'photo' for photos, 'document' for PDFs/JPEGs
+    """
     user = update.effective_user
-    logger.info(f"[EXPENSES_CREATE] Received photo from user {user.full_name} (ID: {user.id})")
+    logger.info(f"[EXPENSES_CREATE] Received {file_type} file from user {user.full_name} (ID: {user.id})")
     
     if not await check_user_access_func(update, context):
-        logger.warning(f"[EXPENSES_CREATE] Access denied for photo upload from user {user.id}")
+        logger.warning(f"[EXPENSES_CREATE] Access denied for {file_type} upload from user {user.id}")
         return ConversationHandler.END
     
-    photo = update.message.photo[-1]  # Get highest resolution photo
-    file = await context.bot.get_file(photo.file_id)
+    # Get file from appropriate message attribute
+    if file_type == "photo":
+        file_obj = update.message.photo[-1]  # Get highest resolution photo
+        file_extension = ".jpg"
+        allowed_types = ALLOWED_IMAGE_TYPES
+        source_type = "photo"
+    else:  # document (PDF or JPEG)
+        file_obj = update.message.document
+        # Determine extension based on MIME type
+        mime_type = file_obj.mime_type or "application/octet-stream"
+        if mime_type == "application/pdf":
+            file_extension = ".pdf"
+        elif mime_type in ("image/jpeg", "image/jpg"):
+            file_extension = ".jpg"
+        else:
+            file_extension = ""
+        allowed_types = ALLOWED_DOCUMENT_TYPES
+        source_type = "document"
+    
+    file = await context.bot.get_file(file_obj.file_id)
     
     # Create secure temporary file
-    file_path = file_handler.create_secure_temp_file(".jpg")
+    file_path = file_handler.create_secure_temp_file(file_extension)
     
     try:
         # Get user comment/caption if provided
         user_comment = update.message.caption if update.message.caption else None
         if user_comment:
             user_comment = InputValidator.sanitize_text(user_comment, max_length=500)
-            logger.info(f"User provided comment with photo: {user_comment[:100]}...")
+            logger.info(f"User provided comment with {source_type}: {user_comment[:100]}...")
         else:
-            logger.info("No user comment provided with photo")
+            logger.info(f"No user comment provided with {source_type}")
         
-        logger.info(f"Downloading receipt photo (file_id: {photo.file_id})")
+        logger.info(f"Downloading receipt {source_type} (file_id: {file_obj.file_id})")
         await file.download_to_drive(file_path)
-        logger.info(f"Receipt photo downloaded to {file_path}")
+        logger.info(f"Receipt {source_type} downloaded to {file_path}")
 
         # Validate file size and type
         try:
             file_handler.validate_file_size(file_path)
-            detected_mime_type = file_handler.validate_file_type(file_path, ALLOWED_IMAGE_TYPES)
+            detected_mime_type = file_handler.validate_file_type(file_path, allowed_types)
             logger.info(f"File validation successful: {detected_mime_type}")
         except SecurityException as e:
             logger.warning(f"File validation failed: {e.user_message}")
@@ -176,9 +203,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check
 
         try:
             # Parse image with Gemini, including user comment if provided
-            logger.info(f"Sending receipt image to Gemini for analysis")
+            logger.info(f"Sending receipt {source_type} to AI service for analysis")
             gemini_output, processing_time = parse_receipt_image(file_path, user_comment)
-            logger.info("Successfully received response from Gemini")
+            logger.info("Successfully received response from AI service")
             
             # Validate and sanitize the response
             try:
@@ -186,13 +213,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check
                 validated_data = InputValidator.validate_receipt_data(raw_data)
                 gemini_output = json.dumps(validated_data)
             except (json.JSONDecodeError, SecurityException) as e:
-                logger.error(f"Invalid data from Gemini API: {e}")
+                logger.error(f"Invalid data from AI service: {e}")
                 await update.message.reply_text("❌ Sorry, I couldn't process the receipt properly. Please try again.")
                 return ConversationHandler.END
             
             # Parse the receipt data into object
             user_id = update.effective_user.id
-            logger.info(f"Parsing Gemini output for user {user_id}")
+            logger.info(f"Parsing AI service output for user {user_id}")
             parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
             logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
             
@@ -215,8 +242,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check
             await handle_ai_service_error(update, e, "receipt")
         
     except Exception as e:
-        logger.error(f"Unexpected error in photo handling: {e}", exc_info=True)
-        await update.message.reply_text("❌ An error occurred while processing your photo. Please try again.")
+        logger.error(f"Unexpected error in {source_type} handling: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ An error occurred while processing your {source_type}. Please try again.")
     finally:
         # Always clean up the temporary file
         file_handler.cleanup_temp_file(file_path)

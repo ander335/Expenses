@@ -24,6 +24,7 @@ RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', '60'))  # seconds
 # Allowed file types
 ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
 ALLOWED_AUDIO_TYPES = {'audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/m4a'}
+ALLOWED_DOCUMENT_TYPES = {'application/pdf', 'image/jpeg'}  # Receipt documents: PDF or JPEG
 
 class SecurityException(Exception):
     """Custom exception that doesn't expose internal details"""
