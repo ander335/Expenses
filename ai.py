@@ -170,6 +170,14 @@ def make_cancellable_request(url, headers, json_data, cancel_event: Optional[thr
                 response = requests.post(url, headers=headers, json=json_data)
             response.raise_for_status()
             result_container['response'] = response
+        except requests.exceptions.HTTPError as e:
+            # Log detailed HTTP error information
+            try:
+                error_body = e.response.text if e.response is not None else "No response body"
+                logger.debug(f"HTTP Error Details - Status: {e.response.status_code if e.response else 'N/A'}, Body: {error_body}")
+            except Exception:
+                pass
+            exception_container['error'] = e
         except Exception as e:
             exception_container['error'] = e
     
@@ -512,7 +520,19 @@ class OpenAIProvider(AIProvider):
             
             return response.json()
         except requests.RequestException as e:
-            error_message = f"Error calling OpenAI API: {str(e)}"
+            error_details = {
+                "error": str(e),
+                "type": type(e).__name__
+            }
+            # Try to extract response details if available
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_details["status_code"] = e.response.status_code
+                    error_details["response_text"] = e.response.text
+                except Exception:
+                    pass
+            
+            error_message = f"Error calling OpenAI API: {json.dumps(error_details)}"
             logger.error(redact_sensitive_data(error_message))
             raise
     
@@ -545,9 +565,26 @@ class OpenAIProvider(AIProvider):
         with open(image_path, "rb") as img_file:
             image_bytes = img_file.read()
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        logger.debug("Image successfully encoded to base64")
+        logger.debug(f"File successfully encoded to base64 (size: {len(image_bytes)} bytes)")
 
-        data_url = f"data:image/jpeg;base64,{image_b64}"
+        # Determine MIME type based on file extension
+        file_ext = os.path.splitext(image_path)[1].lower()
+        if file_ext == '.pdf':
+            mime_type = "application/pdf"
+        elif file_ext in ['.jpg', '.jpeg']:
+            mime_type = "image/jpeg"
+        elif file_ext == '.png':
+            mime_type = "image/png"
+        elif file_ext == '.gif':
+            mime_type = "image/gif"
+        elif file_ext == '.webp':
+            mime_type = "image/webp"
+        else:
+            # Default to jpeg for unknown extensions
+            mime_type = "image/jpeg"
+        
+        logger.debug(f"Detected MIME type: {mime_type} for file extension: {file_ext}")
+        data_url = f"data:{mime_type};base64,{image_b64}"
         
         messages = [
             {"role": "system", "content": "You are an expert at analyzing receipt images and extracting structured data."},
@@ -687,6 +724,13 @@ def _get_provider() -> AIProvider:
 @time_ai_operation("Receipt image parsing")
 def parse_receipt_image(image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
     """Parse receipt image and return structured data as JSON string."""
+    # OpenAI's vision API doesn't support PDFs, so use Gemini for PDFs
+    file_ext = os.path.splitext(image_path)[1].lower()
+    if file_ext == '.pdf':
+        logger.info(f"PDF file detected, using Gemini provider for PDF support")
+        gemini_provider = GeminiProvider()
+        return gemini_provider.parse_receipt_image(image_path, user_comment, cancel_event)
+    
     return _get_provider().parse_receipt_image(image_path, user_comment, cancel_event)
 
 @time_ai_operation("Receipt update with comment")
