@@ -724,13 +724,6 @@ def _get_provider() -> AIProvider:
 @time_ai_operation("Receipt image parsing")
 def parse_receipt_image(image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
     """Parse receipt image and return structured data as JSON string."""
-    # OpenAI's vision API doesn't support PDFs, so use Gemini for PDFs
-    file_ext = os.path.splitext(image_path)[1].lower()
-    if file_ext == '.pdf':
-        logger.info(f"PDF file detected, using Gemini provider for PDF support")
-        gemini_provider = GeminiProvider()
-        return gemini_provider.parse_receipt_image(image_path, user_comment, cancel_event)
-    
     return _get_provider().parse_receipt_image(image_path, user_comment, cancel_event)
 
 @time_ai_operation("Receipt update with comment")
