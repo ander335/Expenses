@@ -320,14 +320,31 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
         # Get all user IDs in the same group (including the user themselves)
         group_user_ids = get_group_user_ids(user_id)
         
-        # Calculate date N months ago
+        # Create a set of valid month-year strings for current month and N-1 months back
         today = datetime.now()
-        start_date = (today - timedelta(days=n_months * 30)).strftime('%d-%m-%Y')
+        current_year = today.year
+        current_month = today.month
+        
+        valid_months = set()
+        year = current_year
+        month = current_month
+        
+        for i in range(n_months):
+            valid_months.add(f"{month:02d}-{year}")
+            # Go back one month
+            month -= 1
+            if month == 0:
+                month = 12
+                year -= 1
+        
+        logger.info(f"Valid months for summary: {sorted(valid_months)}")
         
         # Query receipts grouped by month for all group members
         results = session.query(
-            # Combine month and year from DD-MM-YYYY format
-            func.substr(Receipt.date, 4, 7).label('month'),  # Extract MM-YYYY from DD-MM-YYYY
+            # Extract year and month from DD-MM-YYYY format
+            func.substr(Receipt.date, 7, 4).label('year'),  # Extract YYYY
+            func.substr(Receipt.date, 4, 2).label('month_num'),  # Extract MM
+            func.substr(Receipt.date, 4, 7).label('month'),  # Extract MM-YYYY for display
             func.sum(Receipt.total_amount).label('total'),
             func.count(Receipt.receipt_id).label('count')
         ).filter(
@@ -336,7 +353,8 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
         ).group_by(
             func.substr(Receipt.date, 4, 7)  # Group by MM-YYYY
         ).order_by(
-            desc('month')
+            desc(func.substr(Receipt.date, 7, 4)),  # Sort by year descending
+            desc(func.substr(Receipt.date, 4, 2))   # Then by month descending
         ).all()
         
         # Convert to list of dicts with formatted month
@@ -347,8 +365,8 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
                 'count': r.count or 0
             }
             for r in results 
-            # Filter for last N months - compare only month-year part
-            if r.month >= start_date[3:] 
+            # Filter for last N months - check if month is in valid set
+            if r.month in valid_months 
         ]
     finally:
         session.close()

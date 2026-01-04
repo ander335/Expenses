@@ -196,7 +196,7 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, check
         return
     
     try:
-        n = int(context.args[0]) if context.args else 3  # Default to last 3 months
+        n = int(context.args[0]) if context.args else 6  # Default to last 6 months
         logger.info(f"Generating {n} month summary for user {user.id}")
         if n <= 0:
             raise ValueError("Number must be positive")
@@ -210,7 +210,7 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, check
         await update.message.reply_text("No data found for the specified period.", reply_markup=get_persistent_keyboard())
         return
 
-    text = "Monthly summary:\n\n"
+    text = f"Monthly summary (last {n} months):\n\n"
     for month_data in summary:
         text += (f"{month_data['month']}: "
                 f"{month_data['count']} receipts, "
@@ -314,16 +314,16 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"Persistent summary button clicked by user {user.full_name} (ID: {user_id})")
         
         try:
-            # Default to last 3 months for button click
-            n = 3
+            # Default to last 6 months for button click
+            n = 6
             logger.info(f"Generating {n} month summary for user {user_id}")
             
             summary = get_monthly_summary(user_id, n)
             if not summary:
-                await query.edit_message_text("No data found for the last 3 months.", reply_markup=get_persistent_keyboard())
+                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard())
                 return
 
-            text = "Monthly summary (last 3 months):\n\n"
+            text = f"Monthly summary (last {n} months):\n\n"
             for month_data in summary:
                 text += (f"{month_data['month']}: "
                         f"{month_data['count']} receipts, "
