@@ -24,7 +24,10 @@ def format_receipts_list(receipts: list, title: str, requesting_user_id: int = N
             return f"No receipts found for {search_date}."
         return "No receipts found."
     
-    text = f"{title}:\n\n"
+    text = f"📈 {title}:\n"
+    total_amount = sum(r.total_amount for r in receipts)
+    text += f"Total receipts: {len(receipts)} | Sum: {total_amount:.2f}\n\n"
+    
     for r in receipts:
         # Show user name if receipt belongs to someone else in the group
         user_info = ""
