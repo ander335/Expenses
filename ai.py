@@ -33,17 +33,37 @@ class OperationCancelledException(Exception):
 AI_PROVIDER = os.environ.get('AI_PROVIDER', 'gemini').lower()  # Default to gemini
 
 # Categories and structure definitions
-EXPENSE_CATEGORIES = ["food", "alcohol", "transport", "clothes", "vacation", "sport", "healthcare", "beauty", "household", "car", "cat", "other"]
+EXPENSE_CATEGORIES = {
+    "food": "",
+    "alcohol": "Alcoholic beverages. Non-alcoholic drinks go to the food category",
+    "transport": "Public transport, taxis, public transportation fees",
+    "clothes": "",
+    "vacation": "Travel, hotel, flights, vacation expenses",
+    "sport": "",
+    "healthcare": "",
+    "beauty": "",
+    "household": "",
+    "car": "Car maintenance, repairs, car insurance, car expenses, fuel, parking",
+    "cat": "Cat food and supplies, pet cat expenses",
+    "entertainment": "Movies, museums, theater, concerts, entertainment events, hobbies, games",
+    "gifts": "Cash gifts, presents, certificates",
+    "charity": "Donations, charitable contributions",
+    "other": "Miscellaneous expenses that don't fit other categories"
+}
+
+# Format categories with descriptions for AI prompts
+CATEGORY_LIST_FOR_PROMPT = "; ".join([f"{cat} ({desc})" if desc else cat for cat, desc in EXPENSE_CATEGORIES.items()])
+CATEGORY_NAMES_ONLY = list(EXPENSE_CATEGORIES.keys())
 
 RECEIPT_JSON_STRUCTURE = """{
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
-    "category": "closest matching category from this list: """ + str(EXPENSE_CATEGORIES) + """",
+    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description.",
     "merchant": "name of the store or merchant",
     "positions": [
         {
             "description": "item description",
             "quantity": "item quantity as a number or weight",
-            "category": "item category from this list: """ + str(EXPENSE_CATEGORIES) + """. Cat food should be categorized as 'cat'",
+            "category": "item category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description.",
             "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
         }
     ],
