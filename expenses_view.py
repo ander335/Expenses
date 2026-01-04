@@ -210,7 +210,7 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, check
         await update.message.reply_text("No data found for the specified period.", reply_markup=get_persistent_keyboard())
         return
 
-    text = f"Monthly summary (last {n} months):\n\n"
+    text = f"📊 Monthly summary (last {n} months):\n\n"
     for month_data in summary:
         text += (f"{month_data['month']}: "
                 f"{month_data['count']} receipts, "
@@ -323,7 +323,7 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
                 await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard())
                 return
 
-            text = f"Monthly summary (last {n} months):\n\n"
+            text = f"📊 Monthly summary (last {n} months):\n\n"
             for month_data in summary:
                 text += (f"{month_data['month']}: "
                         f"{month_data['count']} receipts, "
