@@ -42,6 +42,10 @@ async def handle_ai_service_error(update: Update, e: Exception, operation_type: 
         else:
             message = "🤖 The AI service returned incorrectly formatted data. Please try again - this usually resolves the issue."
         
+        # Include full response data for troubleshooting
+        if hasattr(e, 'response_data') and e.response_data:
+            message += f"\n\n📋 Response data: {e.response_data}"
+        
         await update.message.reply_text(message)
     else:
         # Default error messages for other types of errors

@@ -20,7 +20,9 @@ from logger_config import logger, redact_sensitive_data
 # =============================================================================
 class AIServiceMalformedJSONError(Exception):
     """Raised when the AI service returns malformed JSON that cannot be parsed."""
-    pass
+    def __init__(self, message: str, response_data: str = None):
+        super().__init__(message)
+        self.response_data = response_data
 
 class OperationCancelledException(Exception):
     """Raised when an AI operation is cancelled via threading event."""
@@ -304,7 +306,10 @@ def parse_json_response(response_text: str, operation_type: str = "parsing") -> 
             cleaned_data = fixed_data
         except (json.JSONDecodeError, UnicodeError) as e2:
             logger.error(f"Aggressive fix also failed: {str(e2)}")
-            raise AIServiceMalformedJSONError(f"AI service returned invalid JSON for {operation_type}: {str(e)}")
+            raise AIServiceMalformedJSONError(
+                f"AI service returned invalid JSON for {operation_type}: {str(e)}",
+                response_data=response_text
+            )
     
     return cleaned_data
 
