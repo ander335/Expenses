@@ -1,7 +1,7 @@
 # GitHub Copilot Suggestions for Expenses Bot
 
 ## Instructions
-- To deploy bot in cloud use `.\cloud_deploy.bat service` command.
+- To deploy bot in cloud use `.\cloud_deploy.bat` command.
 - Do not run bot locally, it is designed to run in cloud environment only.
 - Don't use pylance MCP. Compile and run .py files locally.
 
