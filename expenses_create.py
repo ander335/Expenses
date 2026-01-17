@@ -6,7 +6,7 @@ from logger_config import logger
 import time
 import json
 from parse import parse_receipt_from_gemini
-from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError
+from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError, format_category_with_emoji
 from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
@@ -121,9 +121,9 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
         output_text += f"💬 Description: {parsed_receipt.description}\n\n"
     output_text += f"Merchant: {parsed_receipt.merchant}\n"
     if parsed_receipt.is_income:
-        output_text += f"Category: {parsed_receipt.category} (Income 💰)\n"
+        output_text += f"Category: {format_category_with_emoji(parsed_receipt.category)} (Income 💰)\n"
     else:
-        output_text += f"Category: {parsed_receipt.category}\n"
+        output_text += f"Category: {format_category_with_emoji(parsed_receipt.category)}\n"
     output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
     output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"

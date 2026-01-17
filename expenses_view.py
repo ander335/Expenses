@@ -6,6 +6,7 @@ from logger_config import logger
 import calendar
 from datetime import datetime
 from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_user, delete_receipt
+from ai import format_category_with_emoji
 
 def get_persistent_keyboard():
     """Create persistent buttons that are always available."""
@@ -44,7 +45,7 @@ def format_receipts_list(receipts: list, title: str, requesting_user_id: int = N
             user_info = f" ({receipt_owner.name if receipt_owner else f'User {r.user_id}'})"
         
         # Add income indicator to category
-        category_display = f"{r.category} (income 💰)" if r.is_income else r.category
+        category_display = f"{format_category_with_emoji(r.category)} (income 💰)" if r.is_income else format_category_with_emoji(r.category)
         text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {category_display} | {r.total_amount:.1f}{user_info}\n"
     
     return text

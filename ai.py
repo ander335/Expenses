@@ -53,9 +53,35 @@ EXPENSE_CATEGORIES = {
     "other": "Miscellaneous expenses that don't fit other categories"
 }
 
+# Emoji mapping for categories
+CATEGORY_EMOJIS = {
+    "food": "🍕",
+    "alcohol": "🍷",
+    "transport": "🚌",
+    "clothes": "👕",
+    "vacation": "✈️",
+    "sport": "⚽",
+    "healthcare": "🏥",
+    "beauty": "💄",
+    "household": "🏠",
+    "car": "🚗",
+    "cat": "🐱",
+    "entertainment": "🎬",
+    "gifts": "🎁",
+    "charity": "❤️",
+    "other": "📦"
+}
+
 # Format categories with descriptions for AI prompts
 CATEGORY_LIST_FOR_PROMPT = "; ".join([f"{cat} ({desc})" if desc else cat for cat, desc in EXPENSE_CATEGORIES.items()])
 CATEGORY_NAMES_ONLY = list(EXPENSE_CATEGORIES.keys())
+
+def format_category_with_emoji(category: str) -> str:
+    """Format category name with emoji if available."""
+    emoji = CATEGORY_EMOJIS.get(category, "")
+    if emoji:
+        return f"{category} {emoji}"
+    return category
 
 RECEIPT_JSON_STRUCTURE = """{
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
