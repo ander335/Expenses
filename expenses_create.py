@@ -6,7 +6,7 @@ from logger_config import logger
 import time
 import json
 from parse import parse_receipt_from_gemini
-from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError, format_category_with_emoji
+from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError, format_category_with_emoji, get_category_emoji
 from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
@@ -126,8 +126,15 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
         output_text += f"Category: {format_category_with_emoji(parsed_receipt.category)}\n"
     output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
-    output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"
-    output_text += f"💡 To make changes, just type what you'd like to adjust or send a voice message"
+    
+    if parsed_receipt.positions and len(parsed_receipt.positions) > 0:
+        output_text += f"\n📦 Items ({len(parsed_receipt.positions)}):\n"
+        
+        for idx, pos in enumerate(parsed_receipt.positions, 1):
+            emoji = get_category_emoji(pos.category)
+            output_text += f"{idx}. {emoji} {pos.description}, {pos.price:.1f}\n"
+    
+    output_text += f"\n💡 To make changes, just type what you'd like to adjust or send a voice message"
 
     # Create approval buttons with timestamp
     keyboard = [[

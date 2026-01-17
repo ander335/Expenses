@@ -83,6 +83,10 @@ def format_category_with_emoji(category: str) -> str:
         return f"{category} {emoji}"
     return category
 
+def get_category_emoji(category: str) -> str:
+    """Get only the emoji for a category."""
+    return CATEGORY_EMOJIS.get(category, "📦")
+
 RECEIPT_JSON_STRUCTURE = """{
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
     "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description",
