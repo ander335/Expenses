@@ -10,6 +10,7 @@
 - Writing code, make sure there is no similar logic, functions or blocks. If there is any, try to generalize it and use in both places.
 - Keep function docstrings concise: use single-line comments only, no multi-line docstrings with Args/Returns sections.
 - Do not test bot functionality by writing simple scripts. Deploy it to cloud right away instead.
+- Important! Do not create any diagrams, not README files, not documentation, unless explicitly instructed to do so. This only consumes time and LLM tokens without adding value.
 
 ## Troubleshooting
 - Extract logs using gcloud run services logs read expenses-bot --project gen-lang-client-0006062814 --region europe-central2 --limit 50

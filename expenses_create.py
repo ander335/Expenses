@@ -120,7 +120,10 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
     if parsed_receipt.description:
         output_text += f"💬 Description: {parsed_receipt.description}\n\n"
     output_text += f"Merchant: {parsed_receipt.merchant}\n"
-    output_text += f"Category: {parsed_receipt.category}\n"
+    if parsed_receipt.is_income:
+        output_text += f"Category: {parsed_receipt.category} (Income 💰)\n"
+    else:
+        output_text += f"Category: {parsed_receipt.category}\n"
     output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
     output_text += f"\nNumber of items: {len(parsed_receipt.positions)}\n\n"

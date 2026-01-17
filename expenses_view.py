@@ -25,8 +25,15 @@ def format_receipts_list(receipts: list, title: str, requesting_user_id: int = N
         return "No receipts found."
     
     text = f"📈 {title}:\n"
-    total_amount = sum(r.total_amount for r in receipts)
-    text += f"Total receipts: {len(receipts)} | Sum: {total_amount:.2f}\n\n"
+    total_expenses = sum(r.total_amount for r in receipts if not r.is_income)
+    total_income = sum(r.total_amount for r in receipts if r.is_income)
+    
+    text += f"Total receipts: {len(receipts)} | "
+    if total_expenses > 0:
+        text += f"Expenses: {total_expenses:.1f} | "
+    if total_income > 0:
+        text += f"Income: {total_income:.1f} | "
+    text += "\n\n"
     
     for r in receipts:
         # Show user name if receipt belongs to someone else in the group
@@ -36,7 +43,9 @@ def format_receipts_list(receipts: list, title: str, requesting_user_id: int = N
             receipt_owner = get_user(r.user_id)
             user_info = f" ({receipt_owner.name if receipt_owner else f'User {r.user_id}'})"
         
-        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {r.category} | {r.total_amount:.2f}{user_info}\n"
+        # Add income indicator to category
+        category_display = f"{r.category} (income 💰)" if r.is_income else r.category
+        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {category_display} | {r.total_amount:.1f}{user_info}\n"
     
     return text
 
@@ -84,6 +93,44 @@ def create_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton("❌ Close", callback_data="cal_close")])
     
     return InlineKeyboardMarkup(keyboard)
+
+def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
+    """Calculate monthly net summary with expenses as positive and income as negative.
+    Returns (formatted_text, has_data)."""
+    expenses = get_monthly_summary(user_id, n, fetch_income=False)
+    income = get_monthly_summary(user_id, n, fetch_income=True)
+    
+    if not expenses and not income:
+        return None, False
+    
+    # Calculate monthly net (expenses positive, income negative)
+    all_months = {}
+    for month_data in (expenses or []):
+        all_months[month_data['month']] = {
+            'expenses': month_data['total'], 
+            'expenses_count': month_data['count'],
+            'income': 0,
+            'income_count': 0
+        }
+    for month_data in (income or []):
+        if month_data['month'] not in all_months:
+            all_months[month_data['month']] = {
+                'expenses': 0,
+                'expenses_count': 0,
+                'income': month_data['total'],
+                'income_count': month_data['count']
+            }
+        else:
+            all_months[month_data['month']]['income'] = month_data['total']
+            all_months[month_data['month']]['income_count'] = month_data['count']
+    
+    text = f"📊 Monthly net expenses:\n\n"
+    for month in sorted(all_months.keys(), key=lambda x: datetime.strptime(x, '%m-%Y'), reverse=True):
+        net = all_months[month]['expenses'] - all_months[month]['income']
+        total_count = all_months[month]['expenses_count'] + all_months[month]['income_count']
+        text += f"{month}: {total_count} receipts, total: {net:.1f}\n"
+    
+    return text, True
 
 async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
     user = update.effective_user
@@ -208,16 +255,11 @@ async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, check
         await update.message.reply_text("Please specify a positive number: /summary N", reply_markup=get_persistent_keyboard())
         return
 
-    summary = get_monthly_summary(update.effective_user.id, n)
-    if not summary:
+    text, has_data = calculate_monthly_net_summary(update.effective_user.id, n)
+    
+    if not has_data:
         await update.message.reply_text("No data found for the specified period.", reply_markup=get_persistent_keyboard())
         return
-
-    text = f"📊 Monthly summary (last {n} months):\n\n"
-    for month_data in summary:
-        text += (f"{month_data['month']}: "
-                f"{month_data['count']} receipts, "
-                f"total: {month_data['total']:.2f}\n")
     
     await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
 
@@ -321,16 +363,11 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
             n = 6
             logger.info(f"Generating {n} month summary for user {user_id}")
             
-            summary = get_monthly_summary(user_id, n)
-            if not summary:
+            text, has_data = calculate_monthly_net_summary(user_id, n)
+            
+            if not has_data:
                 await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard())
                 return
-
-            text = f"📊 Monthly summary (last {n} months):\n\n"
-            for month_data in summary:
-                text += (f"{month_data['month']}: "
-                        f"{month_data['count']} receipts, "
-                        f"total: {month_data['total']:.2f}\n")
             
             await query.edit_message_text(text, reply_markup=get_persistent_keyboard())
             

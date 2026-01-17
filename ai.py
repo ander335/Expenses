@@ -59,17 +59,18 @@ CATEGORY_NAMES_ONLY = list(EXPENSE_CATEGORIES.keys())
 
 RECEIPT_JSON_STRUCTURE = """{
     "description": "brief description of the receipt, and comment on changes due to User comments if there is any",
-    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description.",
-    "merchant": "name of the store or merchant",
+    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description",
+    "merchant": "name of the store or merchant or income source",
+    "is_income": "By default false. true if this is income/refund/return/sold items/gift/salary. Return as boolean (true or false)",
     "positions": [
         {
             "description": "item description",
             "quantity": "item quantity as a number or weight",
-            "category": "item category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description.",
+            "category": "item category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description",
             "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
         }
     ],
-    "total_amount": "total amount as a number",
+    "total_amount": "total amount as a number (always positive)",
     "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. If you see a date in any other format (like YYYY-MM-DD), convert it to DD-MM-YYYY format. For example: 2024-05-15 should become 15-05-2024"
 }"""
 

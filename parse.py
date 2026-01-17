@@ -48,10 +48,15 @@ def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
             logger.warning(f"Skipping invalid position: {e.user_message}")
             continue
     
+    # Extract is_income flag, default to False for expenses
+    is_income = validated_data.get('is_income', False)
+    logger.info(f"Receipt type: {'income' if is_income else 'expense'}")
+    
     return Receipt(
         merchant=validated_data.get('merchant', 'Unknown Shop'),
         category=validated_data.get('category', 'other'),
         total_amount=float(validated_data.get('total_amount', 0)),
+        is_income=is_income,
         text='',
         description=validated_data.get('description'),
         date=validated_data.get('date'),

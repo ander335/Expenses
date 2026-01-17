@@ -39,6 +39,7 @@ class Receipt(Base):
     merchant: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
     total_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    is_income: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     date: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     text: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Full text content of the receipt
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Brief description from Gemini
@@ -106,6 +107,12 @@ def migrate_database():
                 with engine.begin() as conn:
                     conn.exec_driver_sql("ALTER TABLE receipts ADD COLUMN description TEXT")
                 logger.info("Successfully added 'description' column to receipts table")
+            
+            if 'is_income' not in columns:
+                logger.info("Adding 'is_income' column to receipts table...")
+                with engine.begin() as conn:
+                    conn.exec_driver_sql("ALTER TABLE receipts ADD COLUMN is_income BOOLEAN NOT NULL DEFAULT 0")
+                logger.info("Successfully added 'is_income' column to receipts table")
         else:
             logger.info("Receipts table doesn't exist yet, will be created by create_all()")
 
@@ -310,8 +317,9 @@ def get_receipts_by_date(user_id: int, date_str: str) -> List[Receipt]:
     finally:
         session.close()
 
-def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
-    """Get monthly summary for last N months including group members."""
+def get_monthly_summary(user_id: int, n_months: int, fetch_income: Optional[bool] = None) -> List[dict]:
+    """Get monthly summary for last N months including group members.
+    """
     from sqlalchemy import func, desc
     from datetime import datetime, timedelta
     
@@ -340,7 +348,7 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
         logger.info(f"Valid months for summary: {sorted(valid_months)}")
         
         # Query receipts grouped by month for all group members
-        results = session.query(
+        query = session.query(
             # Extract year and month from DD-MM-YYYY format
             func.substr(Receipt.date, 7, 4).label('year'),  # Extract YYYY
             func.substr(Receipt.date, 4, 2).label('month_num'),  # Extract MM
@@ -350,7 +358,15 @@ def get_monthly_summary(user_id: int, n_months: int) -> List[dict]:
         ).filter(
             Receipt.user_id.in_(group_user_ids),
             Receipt.date.isnot(None)  # Exclude records with NULL dates
-        ).group_by(
+        )
+        
+        # Filter by transaction type if specified
+        if fetch_income is not None:
+            query = query.filter(Receipt.is_income == fetch_income)
+            transaction_type = 'income' if fetch_income else 'expenses'
+            logger.info(f"Filtering for: {transaction_type}")
+        
+        results = query.group_by(
             func.substr(Receipt.date, 4, 7)  # Group by MM-YYYY
         ).order_by(
             desc(func.substr(Receipt.date, 7, 4)),  # Sort by year descending
