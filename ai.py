@@ -37,7 +37,7 @@ AI_PROVIDER = os.environ.get('AI_PROVIDER', 'gemini').lower()  # Default to gemi
 # Categories and structure definitions
 EXPENSE_CATEGORIES = {
     "food": "",
-    "alcohol": "Alcoholic beverages. Non-alcoholic drinks go to the food category",
+    "alcohol": "Alcoholic beverages. Non-alcoholic drinks and deposits for bottles (3 czk) go to the food category",
     "transport": "Public transport, taxis, public transportation fees",
     "clothes": "",
     "vacation": "Travel, hotel, flights, vacation expenses",
@@ -46,7 +46,7 @@ EXPENSE_CATEGORIES = {
     "beauty": "",
     "household": "",
     "car": "Car maintenance, repairs, car insurance, car expenses, fuel, parking",
-    "cat": "Cat food and supplies, pet cat expenses",
+    "cat": "Cat food and supplies, pet cat expenses. Cat food: portions can be 70/85/100/400g, brands include Gourmet (GRM), Sheba (SHE)",
     "entertainment": "Movies, museums, theater, concerts, entertainment events, hobbies, games",
     "gifts": "Cash gifts, presents, certificates",
     "charity": "Donations, charitable contributions",
