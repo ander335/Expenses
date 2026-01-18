@@ -128,11 +128,29 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
     
     if parsed_receipt.positions and len(parsed_receipt.positions) > 0:
-        output_text += f"\n📦 Items ({len(parsed_receipt.positions)}):\n"
+        output_text += f"Items ({len(parsed_receipt.positions)}):\n"
         
-        for idx, pos in enumerate(parsed_receipt.positions, 1):
-            emoji = get_category_emoji(pos.category)
-            output_text += f"{idx}. {emoji} {pos.description}, {pos.price:.1f}\n"
+        # Group items by category
+        items_by_category = {}
+        for pos in parsed_receipt.positions:
+            category = pos.category
+            if category not in items_by_category:
+                items_by_category[category] = []
+            items_by_category[category].append(pos)
+        
+        # Sort categories by number of items (descending)
+        sorted_categories = sorted(items_by_category.keys(), key=lambda c: len(items_by_category[c]), reverse=True)
+        
+        # Sort and display items by category
+        for category in sorted_categories:
+            emoji = get_category_emoji(category)
+            category_name = category.capitalize()
+            output_text += f"\n{category_name} {emoji}:\n"
+            
+            # Sort items within category by price (descending)
+            sorted_items = sorted(items_by_category[category], key=lambda x: x.price, reverse=True)
+            for pos in sorted_items:
+                output_text += f"    {pos.description} - {pos.price:.1f}\n"
     
     output_text += f"\n💡 To make changes, just type what you'd like to adjust or send a voice message"
 
