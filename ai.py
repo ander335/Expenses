@@ -36,8 +36,8 @@ AI_PROVIDER = os.environ.get('AI_PROVIDER', 'gemini').lower()  # Default to gemi
 
 # Categories and structure definitions
 EXPENSE_CATEGORIES = {
-    "food": "",
-    "alcohol": "Alcoholic beverages. Non-alcoholic drinks and deposits for bottles (3 czk) go to the food category",
+    "food": "Food, beverages, etc. Additional: glass bottles deposit of 3 czk",
+    "alcohol": "Alcoholic beverages. Important: non-alcoholic drinks and deposits for bottles (3 czk) go to the food category",
     "transport": "Public transport, taxis, public transportation fees",
     "clothes": "",
     "vacation": "Travel, hotel, flights, vacation expenses",
@@ -45,7 +45,7 @@ EXPENSE_CATEGORIES = {
     "healthcare": "",
     "beauty": "",
     "household": "",
-    "car": "Car maintenance, repairs, car insurance, car expenses, fuel, parking",
+    "car": "Car maintenance, repairs, car insurance, car expenses, fuel, parking. For fuel expenses, add price per liter in the description (e.g., 'Price: 31.8/liter')",
     "cat": "Cat food and supplies, pet cat expenses. Cat food: portions can be 70/85/100/400g, brands include Gourmet (GRM), Sheba (SHE)",
     "entertainment": "Movies, museums, theater, concerts, entertainment events, hobbies, games",
     "gifts": "Cash gifts, presents, certificates",
@@ -88,9 +88,9 @@ def get_category_emoji(category: str) -> str:
     return CATEGORY_EMOJIS.get(category, "📦")
 
 RECEIPT_JSON_STRUCTURE = """{
-    "description": "brief description of the receipt. Do not describe individual items here. Do not aggregate history of user changes if any, only the final state",
-    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description",
-    "merchant": "name of the store or merchant or income source",
+    "description": "brief description of the receipt. Important: do not describe individual items in the description nor mention what was purcesed. Do not aggregate history of user changes if any, only the final state",
+    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description. In case of positions with multiple categories, choose the category of the most expensive positions",
+    "merchant": "name of the store or merchant or income source. Return 'Unknown' if not available. Never return empty string",
     "is_income": "By default false. true if this is income/refund/return/sold items/gift/salary. Return as boolean (true or false)",
     "positions": [
         {
@@ -101,7 +101,7 @@ RECEIPT_JSON_STRUCTURE = """{
         }
     ],
     "total_amount": "total amount as a number (always positive)",
-    "date": "receipt date in DD-MM-YYYY format if visible, otherwise null. If you see a date in any other format (like YYYY-MM-DD), convert it to DD-MM-YYYY format. For example: 2024-05-15 should become 15-05-2024"
+    "date": "receipt date in the `DD-MM-YYYY` format. If not available, use `Current date`. Dates in any other format (like YYYY-MM-DD) must be converted to DD-MM-YYYY format. For example: 2024-05-15 should become 15-05-2024"
 }"""
 
 # =============================================================================
@@ -115,10 +115,10 @@ USER_ADJUSTMENT_INSTRUCTIONS = """IMPORTANT: User comments override image data. 
 
 User comments: "{user_comment}\""""
 
-RECEIPT_PARSE_PROMPT_NO_USER_INPUT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
+RECEIPT_PARSE_PROMPT_NO_USER_INPUT = """Analyze this receipt image and extract the following information. Current date: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}"""
 
-RECEIPT_PARSE_PROMPT_WITH_USER_INPUT = """Analyze this receipt image and extract the following information. Current date for reference: {current_date}. Return ONLY a JSON object with these properties:
+RECEIPT_PARSE_PROMPT_WITH_USER_INPUT = """Analyze this receipt image and extract the following information. Current date: {current_date}. Return ONLY a JSON object with these properties:
 {receipt_structure}
 
 Date handling: If receipt shows date without year, use current year. Format as DD-MM-YYYY.
