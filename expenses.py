@@ -26,7 +26,7 @@ from expenses_create import (
 )
 from expenses_view import (
     list_receipts, delete_receipt_cmd, show_receipts_by_date, show_summary,
-    handle_calendar_callback, handle_persistent_buttons
+    handle_calendar_callback, handle_persistent_buttons, calculate_monthly_detailed_summary
 )
 from groups import (
     show_group_info, create_group_cmd, join_group_cmd, leave_group_cmd,
@@ -56,6 +56,8 @@ HELP_TEXT = (
     "\n📋 View expenses:\n"
     "• /list N - show last N added expenses\n"
     "• /delete ID - delete your receipt\n"
+    "• /summary N - show monthly net summary for last N months\n"
+    "• /detailed_summary N - show detailed summary with categories breakdown for last N months\n"
     "\n👥 Groups:\n"
     "• /group - show current group info\n"
     "• /leavegroup - leave your current group\n"
@@ -181,6 +183,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ai_provider_name = "Gemini AI" if AI_PROVIDER == "gemini" else "OpenAI"
     welcome_text = f'Hello {user.full_name}! I am your Expenses bot powered by {ai_provider_name}.\n\n{HELP_TEXT}'
     await update.message.reply_text(welcome_text, reply_markup=get_persistent_keyboard())
+
+async def show_detailed_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show detailed summary with category breakdown for the last N months."""
+    user = update.effective_user
+    logger.info(f"Detailed summary command received from user {user.full_name} (ID: {user.id})")
+    
+    if not await check_user_access(update, context):
+        return
+    
+    try:
+        n = int(context.args[0]) if context.args else 6  # Default to last 6 months
+        logger.info(f"Generating {n} month detailed summary for user {user.id}")
+        if n <= 0:
+            raise ValueError("Number must be positive")
+    except (IndexError, ValueError):
+        logger.warning(f"Invalid detailed_summary command argument from user {user.id}")
+        await update.message.reply_text("Please specify a positive number: /detailed_summary N", reply_markup=get_persistent_keyboard())
+        return
+
+    text, has_data = calculate_monthly_detailed_summary(update.effective_user.id, n, show_categories=True)
+    
+    if not has_data:
+        await update.message.reply_text("No data found for the specified period.", reply_markup=get_persistent_keyboard())
+        return
+    
+    await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
 
 async def flush_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -458,6 +486,7 @@ def main():
     application.add_handler(CommandHandler('date', lambda update, context: show_receipts_by_date(update, context, check_user_access)))
     application.add_handler(CommandHandler('delete', lambda update, context: delete_receipt_cmd(update, context, check_user_access)))
     application.add_handler(CommandHandler('summary', lambda update, context: show_summary(update, context, check_user_access)))
+    application.add_handler(CommandHandler('detailed_summary', show_detailed_summary))
     application.add_handler(CommandHandler('flush', flush_database))
     application.add_handler(CommandHandler('group', lambda update, context: show_group_info(update, context, check_user_access)))
     application.add_handler(CommandHandler('creategroup', lambda update, context: create_group_cmd(update, context, check_user_access, get_admin_user_id)))

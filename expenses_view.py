@@ -5,15 +5,18 @@ from telegram.ext import ContextTypes
 from logger_config import logger
 import calendar
 from datetime import datetime
-from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_user, delete_receipt
-from ai import format_category_with_emoji
+from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_user, delete_receipt, get_group_user_ids
+from sqlalchemy import func, desc
+from db import Session, Receipt
+from ai import format_category_with_emoji, get_category_emoji, get_category_emoji
 
 def get_persistent_keyboard():
     """Create persistent buttons that are always available."""
     keyboard = [
         [
             InlineKeyboardButton("📅 Date Search", callback_data="persistent_calendar"),
-            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary")
+            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary"),
+            InlineKeyboardButton("📈 Details", callback_data="persistent_detailed_summary")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -132,6 +135,124 @@ def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
         text += f"{month}: {total_count} receipts, total: {net:.1f}\n"
     
     return text, True
+
+def calculate_monthly_detailed_summary(user_id: int, n: int, show_categories: bool = True) -> tuple:
+    """Calculate detailed monthly summary with optional category breakdown.
+    
+    Args:
+        user_id: User ID to get summary for
+        n: Number of months to include
+        show_categories: If True, show expenses aggregated by categories sorted from most expensive
+        
+    Returns:
+        (formatted_text, has_data)
+    """
+    session = Session()
+    try:
+        # Get all user IDs in the same group
+        group_user_ids = get_group_user_ids(user_id)
+        
+        # Create a set of valid month-year strings
+        from datetime import datetime as dt, timedelta
+        today = dt.now()
+        current_year = today.year
+        current_month = today.month
+        
+        valid_months = set()
+        year = current_year
+        month = current_month
+        
+        for i in range(n):
+            valid_months.add(f"{month:02d}-{year}")
+            month -= 1
+            if month == 0:
+                month = 12
+                year -= 1
+        
+        logger.info(f"Generating detailed summary for months: {sorted(valid_months)}")
+        
+        # Get all receipts for the period
+        receipts = session.query(Receipt).filter(
+            Receipt.user_id.in_(group_user_ids),
+            Receipt.date.isnot(None)
+        ).all()
+        
+        if not receipts:
+            return None, False
+        
+        # Organize receipts by month
+        monthly_data = {}
+        category_data = {}  # For aggregating by category
+        
+        for receipt in receipts:
+            # Extract month from date (DD-MM-YYYY format)
+            month_str = receipt.date[3:10]  # MM-YYYY
+            
+            if month_str not in valid_months:
+                continue
+            
+            if month_str not in monthly_data:
+                monthly_data[month_str] = {
+                    'expenses': [],
+                    'income': [],
+                }
+            
+            if receipt.is_income:
+                monthly_data[month_str]['income'].append(receipt)
+            else:
+                monthly_data[month_str]['expenses'].append(receipt)
+                # Aggregate by category
+                if month_str not in category_data:
+                    category_data[month_str] = {}
+                if receipt.category not in category_data[month_str]:
+                    category_data[month_str][receipt.category] = 0
+                category_data[month_str][receipt.category] += receipt.total_amount
+        
+        if not monthly_data:
+            return None, False
+        
+        text = f"📊 Detailed Monthly Summary:\n\n"
+        
+        # Sort months from newest to oldest
+        sorted_months = sorted(monthly_data.keys(), key=lambda x: dt.strptime(x, '%m-%Y'), reverse=True)
+        
+        for month in sorted_months:
+            month_total_expenses = sum(r.total_amount for r in monthly_data[month]['expenses'])
+            month_total_income = sum(r.total_amount for r in monthly_data[month]['income'])
+            month_net = month_total_expenses - month_total_income
+            total_items = len(monthly_data[month]['expenses']) + len(monthly_data[month]['income'])
+            
+            text += f"📅 {month}:\n"
+            text += f"  📌 Total: {total_items} items | Net: {month_net:.1f}\n"
+            
+            # Show expenses breakdown
+            if monthly_data[month]['expenses']:
+                text += f"  💸 Expenses: {month_total_expenses:.1f}\n"
+                
+                if show_categories and month in category_data:
+                    # Sort categories by amount (highest first)
+                    sorted_categories = sorted(
+                        category_data[month].items(),
+                        key=lambda x: x[1],
+                        reverse=True
+                    )
+                    
+                    for category, amount in sorted_categories:
+                        category_emoji = get_category_emoji(category)
+                        # Count items in this category
+                        count = len([r for r in monthly_data[month]['expenses'] if r.category == category])
+                        text += f"    {category_emoji} {amount:.1f} ({count} items)\n"
+            
+            # Show income breakdown
+            if monthly_data[month]['income']:
+                text += f"  💰 {month_total_income:.1f} ({len(monthly_data[month]['income'])} items)\n"
+            
+            text += "\n"
+        
+        return text, True
+    
+    finally:
+        session.close()
 
 async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
     user = update.effective_user
@@ -375,3 +496,23 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
         except Exception as e:
             logger.error(f"Error during summary generation for user {user_id}: {str(e)}", exc_info=True)
             await query.edit_message_text(f"❌ Failed to generate summary: {str(e)}", reply_markup=get_persistent_keyboard())
+    
+    elif query.data == "persistent_detailed_summary":
+        logger.info(f"Persistent detailed summary button clicked by user {user.full_name} (ID: {user_id})")
+        
+        try:
+            # Default to last 6 months for button click with category breakdown
+            n = 6
+            logger.info(f"Generating {n} month detailed summary with categories for user {user_id}")
+            
+            text, has_data = calculate_monthly_detailed_summary(user_id, n, show_categories=True)
+            
+            if not has_data:
+                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard())
+                return
+            
+            await query.edit_message_text(text, reply_markup=get_persistent_keyboard())
+            
+        except Exception as e:
+            logger.error(f"Error during detailed summary generation for user {user_id}: {str(e)}", exc_info=True)
+            await query.edit_message_text(f"❌ Failed to generate detailed summary: {str(e)}", reply_markup=get_persistent_keyboard())
