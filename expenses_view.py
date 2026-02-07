@@ -10,13 +10,13 @@ from sqlalchemy import func, desc
 from db import Session, Receipt
 from ai import format_category_with_emoji, get_category_emoji, get_category_emoji
 
-def get_persistent_keyboard():
-    """Create persistent buttons that are always available."""
+def get_persistent_keyboard(show_summary=True):
+    button_text = "📊 Summary" if show_summary else "📈 Details"
+    button_data = "persistent_summary" if show_summary else "persistent_detailed_summary"
     keyboard = [
         [
             InlineKeyboardButton("📅 Date Search", callback_data="persistent_calendar"),
-            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary"),
-            InlineKeyboardButton("📈 Details", callback_data="persistent_detailed_summary")
+            InlineKeyboardButton(button_text, callback_data=button_data)
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -488,14 +488,15 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
             text, has_data = calculate_monthly_net_summary(user_id, n)
             
             if not has_data:
-                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard())
+                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard(show_summary=True))
                 return
             
-            await query.edit_message_text(text, reply_markup=get_persistent_keyboard())
+            # Show summary with Details button
+            await query.edit_message_text(text, reply_markup=get_persistent_keyboard(show_summary=False))
             
         except Exception as e:
             logger.error(f"Error during summary generation for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"❌ Failed to generate summary: {str(e)}", reply_markup=get_persistent_keyboard())
+            await query.edit_message_text(f"❌ Failed to generate summary: {str(e)}", reply_markup=get_persistent_keyboard(show_summary=True))
     
     elif query.data == "persistent_detailed_summary":
         logger.info(f"Persistent detailed summary button clicked by user {user.full_name} (ID: {user_id})")
@@ -508,11 +509,12 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
             text, has_data = calculate_monthly_detailed_summary(user_id, n, show_categories=True)
             
             if not has_data:
-                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard())
+                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard(show_summary=False))
                 return
             
-            await query.edit_message_text(text, reply_markup=get_persistent_keyboard())
+            # Show detailed summary with Summary button to toggle back
+            await query.edit_message_text(text, reply_markup=get_persistent_keyboard(show_summary=True))
             
         except Exception as e:
             logger.error(f"Error during detailed summary generation for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"❌ Failed to generate detailed summary: {str(e)}", reply_markup=get_persistent_keyboard())
+            await query.edit_message_text(f"❌ Failed to generate detailed summary: {str(e)}", reply_markup=get_persistent_keyboard(show_summary=False))

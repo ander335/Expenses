@@ -26,7 +26,8 @@ from expenses_create import (
 )
 from expenses_view import (
     list_receipts, delete_receipt_cmd, show_receipts_by_date, show_summary,
-    handle_calendar_callback, handle_persistent_buttons, calculate_monthly_detailed_summary
+    handle_calendar_callback, handle_persistent_buttons, calculate_monthly_detailed_summary,
+    get_persistent_keyboard
 )
 from groups import (
     show_group_info, create_group_cmd, join_group_cmd, leave_group_cmd,
@@ -36,16 +37,6 @@ from groups import (
 def get_admin_user_id() -> int:
     # TELEGRAM_ADMIN_ID is guaranteed valid by auth_data import
     return TELEGRAM_ADMIN_ID
-
-def get_persistent_keyboard():
-    """Create persistent buttons that are always available."""
-    keyboard = [
-        [
-            InlineKeyboardButton("📅 Date Search", callback_data="persistent_calendar"),
-            InlineKeyboardButton("📊 Summary", callback_data="persistent_summary")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 # Common help text for the bot
 HELP_TEXT = (
