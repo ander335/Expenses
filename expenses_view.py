@@ -219,11 +219,10 @@ def calculate_monthly_detailed_summary(user_id: int, n: int, show_categories: bo
         for month in sorted_months:
             month_total_expenses = sum(r.total_amount for r in monthly_data[month]['expenses'])
             month_total_income = sum(r.total_amount for r in monthly_data[month]['income'])
-            month_net = month_total_expenses - month_total_income
             total_items = len(monthly_data[month]['expenses']) + len(monthly_data[month]['income'])
             
             text += f"📅 {month}:\n"
-            text += f"  📌 Total: {total_items} items | Net: {month_net:.1f}\n"
+            text += f"  📌 Total: {total_items} items\n"
             
             # Show expenses breakdown
             if monthly_data[month]['expenses']:
@@ -239,13 +238,11 @@ def calculate_monthly_detailed_summary(user_id: int, n: int, show_categories: bo
                     
                     for category, amount in sorted_categories:
                         category_emoji = get_category_emoji(category)
-                        # Count items in this category
-                        count = len([r for r in monthly_data[month]['expenses'] if r.category == category])
-                        text += f"    {category_emoji} {amount:.1f} ({count} items)\n"
+                        text += f"    {category_emoji} {amount:.1f}\n"
             
             # Show income breakdown
             if monthly_data[month]['income']:
-                text += f"  💰 {month_total_income:.1f} ({len(monthly_data[month]['income'])} items)\n"
+                text += f"  💰 Additional income: {month_total_income:.1f}\n"
             
             text += "\n"
         
