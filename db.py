@@ -45,6 +45,8 @@ class Receipt(Base):
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Brief description from Gemini
     user: Mapped["User"] = relationship("User", back_populates="receipts")
     positions: Mapped[List["Position"]] = relationship("Position", back_populates="receipt", cascade="all, delete-orphan")
+    # Non-mapped attribute - DB will ignore this
+    reference_receipts_ids: List[int] = None
 
 @dataclass
 class Position(Base):
@@ -56,6 +58,15 @@ class Position(Base):
     category: Mapped[str] = mapped_column(String, nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=False)
     receipt: Mapped["Receipt"] = relationship("Receipt", back_populates="positions")
+
+@dataclass
+class ReceiptRelation(Base):
+    __tablename__ = "receipt_relations"
+    relation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    receipt_id_1: Mapped[int] = mapped_column(Integer, ForeignKey('receipts.receipt_id', ondelete='CASCADE'), nullable=False)
+    receipt_id_2: Mapped[int] = mapped_column(Integer, ForeignKey('receipts.receipt_id', ondelete='CASCADE'), nullable=False)
+    receipt_1: Mapped["Receipt"] = relationship("Receipt", foreign_keys=[receipt_id_1])
+    receipt_2: Mapped["Receipt"] = relationship("Receipt", foreign_keys=[receipt_id_2])
 
 @dataclass
 class Group(Base):
@@ -115,6 +126,23 @@ def migrate_database():
                 logger.info("Successfully added 'is_income' column to receipts table")
         else:
             logger.info("Receipts table doesn't exist yet, will be created by create_all()")
+        
+        # --- Receipt Relations table migrations ---
+        if 'receipt_relations' not in table_names:
+            logger.info("Creating 'receipt_relations' table...")
+            with engine.begin() as conn:
+                conn.exec_driver_sql("""
+                    CREATE TABLE receipt_relations (
+                        relation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        receipt_id_1 INTEGER NOT NULL,
+                        receipt_id_2 INTEGER NOT NULL,
+                        FOREIGN KEY (receipt_id_1) REFERENCES receipts(receipt_id) ON DELETE CASCADE,
+                        FOREIGN KEY (receipt_id_2) REFERENCES receipts(receipt_id) ON DELETE CASCADE
+                    )
+                """)
+            logger.info("Successfully created 'receipt_relations' table")
+        else:
+            logger.info("'receipt_relations' table already exists")
 
         # --- Users table migrations ---
         if 'users' in table_names:
@@ -231,6 +259,143 @@ def add_receipt(receipt: Receipt) -> int:
     finally:
         session.close()
     return receipt_id
+
+def create_receipt_relations(receipt_id: int, related_receipt_ids: List[int]) -> None:
+    """Create bidirectional relations between a receipt and related receipts.
+    
+    Relations are stored bidirectionally - if (A, B) exists, then (B, A) relation also exists logically.
+    In the table, we store them canonically with the smaller ID first.
+    
+    Only receipts belonging to users in the same group can be linked together.
+    
+    Args:
+        receipt_id: The receipt that has the relations
+        related_receipt_ids: List of receipt IDs that this receipt is related to
+    
+    Raises:
+        ValueError: If any of the receipt IDs don't exist, belong to different groups, or are invalid.
+                   No changes are applied in this case.
+    """
+    if not related_receipt_ids:
+        logger.debug(f"No receipt relations to create for receipt {receipt_id}")
+        return
+    
+    session = Session()
+    try:
+        # First, validate that the main receipt exists
+        main_receipt = session.query(Receipt).filter_by(receipt_id=receipt_id).first()
+        if not main_receipt:
+            raise ValueError(f"Receipt {receipt_id} not found")
+        
+        # Get the group of the main receipt's owner
+        main_user_group_ids = get_group_user_ids(main_receipt.user_id)
+        logger.debug(f"Main receipt user {main_receipt.user_id} belongs to group with users: {main_user_group_ids}")
+        
+        # Validate that ALL related receipts exist and belong to the same group
+        missing_ids = []
+        cross_group_ids = []
+        
+        for related_id in related_receipt_ids:
+            related_receipt = session.query(Receipt).filter_by(receipt_id=related_id).first()
+            if not related_receipt:
+                missing_ids.append(related_id)
+            elif related_receipt.user_id not in main_user_group_ids:
+                # Receipt belongs to a different group
+                cross_group_ids.append((related_id, related_receipt.user_id))
+        
+        # If any IDs are missing, fail immediately without applying changes
+        if missing_ids:
+            raise ValueError(f"The following receipt IDs do not exist: {missing_ids}")
+        
+        # If any receipts belong to different groups, fail
+        if cross_group_ids:
+            invalid_pairs = ", ".join([f"{rid} (user {uid})" for rid, uid in cross_group_ids])
+            raise ValueError(f"Cannot link receipts from different groups. The following receipts belong to other groups: {invalid_pairs}")
+        
+        # All IDs exist and belong to same group, now create relations
+        logger.info(f"Validation passed: All {len(related_receipt_ids)} receipts belong to the same group. Proceeding with relation creation.")
+        created_count = 0
+        for related_id in related_receipt_ids:
+            # Store relation canonically with smaller ID first
+            id_1 = min(receipt_id, related_id)
+            id_2 = max(receipt_id, related_id)
+            
+            # Skip if both IDs are the same
+            if id_1 == id_2:
+                logger.debug(f"Skipping self-relation for receipt {receipt_id}")
+                continue
+            
+            # Check if relation already exists (in either direction)
+            existing_relation = session.query(ReceiptRelation).filter_by(
+                receipt_id_1=id_1, receipt_id_2=id_2
+            ).first()
+            
+            if existing_relation:
+                logger.debug(f"Relation already exists between receipts {id_1} and {id_2}")
+                continue
+            
+            # Create new bidirectional relation
+            relation = ReceiptRelation(receipt_id_1=id_1, receipt_id_2=id_2)
+            session.add(relation)
+            created_count += 1
+            logger.info(f"Created relation: receipt {id_1} <-> {id_2}")
+        
+        session.commit()
+        logger.info(f"Successfully created {created_count} new receipt relations for receipt {receipt_id}")
+    except ValueError as e:
+        session.rollback()
+        logger.error(f"Failed to create receipt relations: {str(e)}")
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error creating receipt relations: {str(e)}", exc_info=True)
+        raise
+    finally:
+        session.close()
+
+def get_related_receipts(receipt_id: int) -> List[Receipt]:
+    """Get all receipts associated with the given receipt ID.
+    
+    Args:
+        receipt_id: The receipt ID to find relations for
+    
+    Returns:
+        List of Receipt objects that are related to the given receipt_id
+    """
+    session = Session()
+    try:
+        # Query for all relations where this receipt is involved
+        # Check both receipt_id_1 and receipt_id_2 since relations are bidirectional
+        from sqlalchemy import or_
+        
+        relations = session.query(ReceiptRelation).filter(
+            or_(
+                ReceiptRelation.receipt_id_1 == receipt_id,
+                ReceiptRelation.receipt_id_2 == receipt_id
+            )
+        ).all()
+        
+        if not relations:
+            logger.debug(f"No related receipts found for receipt {receipt_id}")
+            return []
+        
+        # Extract the related receipt IDs
+        related_ids = set()
+        for relation in relations:
+            if relation.receipt_id_1 == receipt_id:
+                related_ids.add(relation.receipt_id_2)
+            else:
+                related_ids.add(relation.receipt_id_1)
+        
+        # Fetch and return the actual Receipt objects
+        related_receipts = session.query(Receipt).filter(
+            Receipt.receipt_id.in_(related_ids)
+        ).all()
+        
+        logger.debug(f"Found {len(related_receipts)} related receipts for receipt {receipt_id}")
+        return related_receipts
+    finally:
+        session.close()
 
 def get_last_n_receipts(user_id: int, n: int) -> List[Receipt]:
     """Get last N receipts for a user and their group members, ordered by date desc."""

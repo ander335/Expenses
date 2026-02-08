@@ -92,6 +92,7 @@ RECEIPT_JSON_STRUCTURE = """{
     "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description. In case of positions with multiple categories, choose the category of the most expensive positions",
     "merchant": "name of the store or merchant or income source. Return 'Unknown' if not available. Never return empty string",
     "is_income": "By default false. true if this is income/refund/return/sold items/gift/salary. Return as boolean (true or false)",
+    "reference_receipts_ids": "Optional: array of receipt IDs that this receipt is associated with (e.g. reimbursement for original expenses). Only fill if user explicitly provides receipt IDs for linking purposes. Return empty array otherwise",
     "positions": [
         {
             "description": "item description",

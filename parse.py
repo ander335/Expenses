@@ -4,8 +4,8 @@ Handles parsing of receipt data into domain models.
 """
 
 import json
-from typing import Dict, Any
-from db import Receipt, Position
+from typing import Dict, Any, List, Optional, Tuple
+from db import Receipt, Position, ReceiptRelation
 from logger_config import logger
 from security_utils import InputValidator, SecurityException
 
@@ -52,7 +52,7 @@ def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
     is_income = validated_data.get('is_income', False)
     logger.info(f"Receipt type: {'income' if is_income else 'expense'}")
     
-    return Receipt(
+    receipt = Receipt(
         merchant=validated_data.get('merchant', 'Unknown Shop'),
         category=validated_data.get('category', 'other'),
         total_amount=float(validated_data.get('total_amount', 0)),
@@ -63,6 +63,33 @@ def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
         positions=positions,
         user_id=validated_user_id
     )
+    
+    # Extract and set reference receipt IDs
+    reference_ids = data.get('reference_receipts_ids')
+    if reference_ids is None:
+        receipt.reference_receipts_ids = []
+    elif isinstance(reference_ids, list):
+        # Validate and convert all items to integers
+        validated_ids = []
+        for ref_id in reference_ids:
+            if isinstance(ref_id, int):
+                validated_ids.append(ref_id)
+            elif isinstance(ref_id, str) and ref_id.isdigit():
+                validated_ids.append(int(ref_id))
+            else:
+                logger.warning(f"Invalid reference receipt ID: {ref_id}, skipping")
+        receipt.reference_receipts_ids = validated_ids
+    elif isinstance(reference_ids, int):
+        # Single ID provided as integer
+        receipt.reference_receipts_ids = [reference_ids]
+    elif isinstance(reference_ids, str) and reference_ids.isdigit():
+        # Single ID provided as string
+        receipt.reference_receipts_ids = [int(reference_ids)]
+    else:
+        logger.warning(f"Invalid reference_receipts_ids format: {reference_ids}")
+        receipt.reference_receipts_ids = []
+    
+    return receipt
 
 def parse_receipt_from_file(file_path: str, user_id: int) -> Receipt:
     """Read receipt data from a JSON file and convert it to a Receipt object."""

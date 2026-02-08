@@ -11,7 +11,7 @@ from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
 )
-from db import add_receipt, get_or_create_user, User
+from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt
 
 # States for conversation handler
 AWAITING_APPROVAL = 1
@@ -126,6 +126,9 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
         output_text += f"Category: {format_category_with_emoji(parsed_receipt.category)}\n"
     output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
+    
+    if parsed_receipt.reference_receipts_ids and len(parsed_receipt.reference_receipts_ids) > 0:
+        output_text += f"Related Receipts: {', '.join(map(str, parsed_receipt.reference_receipts_ids))}\n"
     
     if parsed_receipt.positions and len(parsed_receipt.positions) > 0:
         output_text += f"Items ({len(parsed_receipt.positions)}):\n"
@@ -332,10 +335,23 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             receipt_id = add_receipt(receipt)
             logger.info(f"Receipt saved successfully with ID: {receipt_id}")
             
+            # Extract and create receipt relations if any
+            try:
+                related_ids = receipt.reference_receipts_ids
+                if related_ids:
+                    logger.info(f"Creating receipt relations for receipt {receipt_id} with {len(related_ids)} references")
+                    create_receipt_relations(receipt_id, related_ids)
+            except Exception as e:
+                # Rollback: delete the receipt if relations creation fails
+                logger.error(f"Failed to create receipt relations: {str(e)}. Rolling back receipt addition.")
+                delete_receipt(receipt_id, user_id)
+                raise
+            
             # Remove buttons from original message but keep the content
             await query.edit_message_reply_markup(reply_markup=None)
             logger.info(f"Removed approval buttons from receipt summary message for user {user_id}")
-            # Send separate approval message
+            
+            # Send approval message
             await query.message.reply_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
         except Exception as e:
             logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
