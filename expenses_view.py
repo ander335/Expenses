@@ -47,9 +47,9 @@ def format_receipts_list(receipts: list, title: str, requesting_user_id: int = N
             receipt_owner = get_user(r.user_id)
             user_info = f" ({receipt_owner.name if receipt_owner else f'User {r.user_id}'})"
         
-        # Add income indicator to category
-        category_display = f"{format_category_with_emoji(r.category)} (income 💰)" if r.is_income else format_category_with_emoji(r.category)
-        text += f"ID: {r.receipt_id} | {r.date or 'No date'} | {r.merchant} | {category_display} | {r.total_amount:.1f}{user_info}\n"
+        # Add income indicator to emoji
+        emoji_display = f"{get_category_emoji(r.category)} (💰)" if r.is_income else get_category_emoji(r.category)
+        text += f"{r.receipt_id} | {r.date or 'No date'} | {emoji_display} | {r.total_amount:.1f} | {r.merchant}{user_info}\n"
     
     return text
 

@@ -4,7 +4,7 @@ Manages SQLite database for expenses using SQLAlchemy ORM with Google Cloud Stor
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, ClassVar
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
@@ -46,7 +46,7 @@ class Receipt(Base):
     user: Mapped["User"] = relationship("User", back_populates="receipts")
     positions: Mapped[List["Position"]] = relationship("Position", back_populates="receipt", cascade="all, delete-orphan")
     # Non-mapped attribute - DB will ignore this
-    reference_receipts_ids: List[int] = None
+    reference_receipts_ids: ClassVar[Optional[List[int]]] = None
 
 @dataclass
 class Position(Base):
