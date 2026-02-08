@@ -8,7 +8,8 @@ from datetime import datetime
 from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_user, delete_receipt, get_group_user_ids
 from sqlalchemy import func, desc
 from db import Session, Receipt
-from ai import format_category_with_emoji, get_category_emoji, get_category_emoji
+from ai import format_category_with_emoji, get_category_emoji
+from expenses_create import format_receipt_for_display
 
 def get_persistent_keyboard(show_summary=True):
     button_text = "📊 Summary" if show_summary else "📈 Details"
@@ -47,9 +48,11 @@ def format_receipts_list(receipts: list, title: str, requesting_user_id: int = N
             receipt_owner = get_user(r.user_id)
             user_info = f" ({receipt_owner.name if receipt_owner else f'User {r.user_id}'})"
         
-        # Add income indicator to emoji
-        emoji_display = f"{get_category_emoji(r.category)} (💰)" if r.is_income else get_category_emoji(r.category)
-        text += f"{r.receipt_id} | {r.date or 'No date'} | {emoji_display} | {r.total_amount:.1f} | {r.merchant}{user_info}\n"
+        # Use helper function to format receipt, add user info if needed
+        receipt_line = format_receipt_for_display(r)
+        if user_info:
+            receipt_line += user_info
+        text += receipt_line + "\n"
     
     return text
 

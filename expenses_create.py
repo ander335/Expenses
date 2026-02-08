@@ -11,7 +11,7 @@ from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
 )
-from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt
+from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt, get_receipt, get_user, get_group_user_ids
 
 # States for conversation handler
 AWAITING_APPROVAL = 1
@@ -100,6 +100,15 @@ async def transcribe_voice_and_notify(update: Update, context: ContextTypes.DEFA
 
     return transcribed_text
 
+def format_receipt_for_display(receipt):
+    emoji_display = f"{get_category_emoji(receipt.category)} (💰)" if receipt.is_income else get_category_emoji(receipt.category)
+    
+    merchant = receipt.merchant or "Unknown"
+    date = receipt.date or "No date"
+    amount = f"{receipt.total_amount:.1f}"
+    
+    return f"{receipt.receipt_id} | {date} | {emoji_display} | {amount} | {merchant}"
+
 async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None):
     """Send a preview of the parsed receipt with Approve/Reject buttons and store temp data."""
     user_id = update.effective_user.id
@@ -127,9 +136,6 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
     output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
     
-    if parsed_receipt.reference_receipts_ids and len(parsed_receipt.reference_receipts_ids) > 0:
-        output_text += f"Related Receipts: {', '.join(map(str, parsed_receipt.reference_receipts_ids))}\n"
-    
     if parsed_receipt.positions and len(parsed_receipt.positions) > 0:
         output_text += f"Items ({len(parsed_receipt.positions)}):\n"
         
@@ -148,12 +154,34 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
         for category in sorted_categories:
             emoji = get_category_emoji(category)
             category_name = category.capitalize()
-            output_text += f"\n{category_name} {emoji}:\n"
+            output_text += f"{category_name} {emoji}:\n"
             
             # Sort items within category by price (descending)
             sorted_items = sorted(items_by_category[category], key=lambda x: x.price, reverse=True)
             for pos in sorted_items:
                 output_text += f"    {pos.description} - {pos.price:.1f}\n"
+    
+    # Add related receipts section after items
+    if parsed_receipt.reference_receipts_ids and len(parsed_receipt.reference_receipts_ids) > 0:
+        output_text += f"\nRelated Receipts:\n"
+        for receipt_id in parsed_receipt.reference_receipts_ids:
+            try:
+                related_receipt = get_receipt(receipt_id)
+                if related_receipt:
+                    # Check permissions - verify user has access to this receipt
+                    group_user_ids = get_group_user_ids(user_id)
+                    if related_receipt.user_id not in group_user_ids:
+                        logger.warning(f"Receipt {receipt_id} not accessible to user {user_id} (different group)")
+                        output_text += f"  Receipt {receipt_id} (not accessible - different group)\n"
+                    else:
+                        receipt_line = format_receipt_for_display(related_receipt)
+                        output_text += f"  {receipt_line}\n"
+                else:
+                    logger.warning(f"Related receipt {receipt_id} not found")
+                    output_text += f"  Receipt {receipt_id} (not found)\n"
+            except Exception as e:
+                logger.warning(f"Error fetching related receipt {receipt_id}: {e}")
+                output_text += f"  Receipt {receipt_id} (error loading)\n"
     
     output_text += f"\n💡 To make changes, just type what you'd like to adjust or send a voice message"
 
