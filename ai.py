@@ -11,7 +11,7 @@ import time
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional
 
 from logger_config import logger, redact_sensitive_data
 
@@ -357,6 +357,24 @@ class GeminiProvider(AIProvider):
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
     
+    def _log_token_usage_from_response(self, result: dict) -> None:
+        """Extract token usage from API response and log it with cost information.
+        
+        Gemini 2.5 Flash pricing: $0.30/1M input, $2.50/1M output (USD).
+        Exchange rate: 1 USD = 20 CZK.
+        """
+        usage_metadata = result.get("usageMetadata", {})
+        prompt_tokens = usage_metadata.get("promptTokenCount", 0)
+        output_tokens = usage_metadata.get("candidatesTokenCount", 0)
+        
+        # Calculate costs
+        input_cost_usd = (prompt_tokens / 1_000_000.0) * 0.30
+        output_cost_usd = (output_tokens / 1_000_000.0) * 2.50
+        total_cost_usd = input_cost_usd + output_cost_usd
+        total_cost_czk = total_cost_usd * 20.0
+        
+        logger.info(f"Token usage - Input: {prompt_tokens}, Output: {output_tokens} | Approx cost: {total_cost_czk:.2f} Kč")
+    
     def _make_request(self, payload: dict, cancel_event: Optional[threading.Event] = None) -> dict:
         """Make a request to Gemini API."""
         headers = {"Content-Type": "application/json"}
@@ -438,6 +456,8 @@ class GeminiProvider(AIProvider):
         result = self._make_request(payload, cancel_event)
         logger.info("Successfully received response from Gemini API")
         
+        self._log_token_usage_from_response(result)
+        
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
         return parse_json_response(response_text, "parsing")
     
@@ -469,6 +489,8 @@ class GeminiProvider(AIProvider):
         result = self._make_request(payload, cancel_event)
         logger.info("Successfully received update response from Gemini API")
         
+        self._log_token_usage_from_response(result)
+        
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
         return parse_json_response(response_text, "update")
     
@@ -495,6 +517,8 @@ class GeminiProvider(AIProvider):
         logger.info("Sending voice transcription request to Gemini API")
         result = self._make_request(payload, cancel_event)
         logger.info("Successfully received voice transcription response from Gemini API")
+        
+        self._log_token_usage_from_response(result)
         
         transcribed_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
         logger.info(f"Voice transcription successful: {transcribed_text[:100]}...")
@@ -527,6 +551,8 @@ class GeminiProvider(AIProvider):
         logger.info("Sending voice-to-receipt request to Gemini API")
         result = self._make_request(payload, cancel_event=cancel_event)
         logger.info("Successfully received voice-to-receipt response from Gemini API")
+        
+        self._log_token_usage_from_response(result)
         
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
         return parse_json_response(response_text, "voice-to-receipt parsing")
