@@ -11,7 +11,7 @@ from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
 )
-from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt, get_receipt, get_user, get_group_user_ids
+from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt, get_receipt, get_user, get_group_user_ids, get_user_custom_prompt
 
 # States for conversation handler
 AWAITING_APPROVAL = 1
@@ -267,7 +267,8 @@ async def handle_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             # Parse image with Gemini, including user comment if provided
             logger.info(f"Sending receipt {source_type} to AI service for analysis")
-            gemini_output, processing_time = parse_receipt_image(file_path, user_comment)
+            custom_prompt = get_user_custom_prompt(user_id)
+            gemini_output, processing_time = parse_receipt_image(file_path, user_comment, custom_prompt=custom_prompt)
             logger.info("Successfully received response from AI service")
             
             # Validate and sanitize the response
@@ -456,7 +457,8 @@ async def handle_user_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Get the original JSON and send update request to Gemini
         original_json = user_data["original_json"]
         logger.info(f"Sending update request to Gemini with user comment: {user_comment}")
-        updated_json, processing_time = update_receipt_with_comment(original_json, user_comment)
+        custom_prompt = get_user_custom_prompt(user_id)
+        updated_json, processing_time = update_receipt_with_comment(original_json, user_comment, custom_prompt=custom_prompt)
         logger.info("Successfully received updated JSON from Gemini")
         
         # Validate and sanitize the response
@@ -538,9 +540,11 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             
             # Convert transcribed text to receipt structure using Gemini
             logger.info("Converting transcribed text to receipt structure")
-            gemini_output, processing_time = parse_voice_to_receipt(transcribed_text)
+            user_id = update.effective_user.id
+            custom_prompt = get_user_custom_prompt(user_id)
+            gemini_output, processing_time = parse_voice_to_receipt(transcribed_text, custom_prompt=custom_prompt)
             logger.info("Successfully received receipt structure from Gemini")
-            
+
             # Validate and sanitize the response
             try:
                 raw_data = json.loads(gemini_output)
@@ -648,7 +652,8 @@ async def handle_voice_comment(update: Update, context: ContextTypes.DEFAULT_TYP
             # Get the original JSON and send update request to Gemini
             original_json = user_data["original_json"]
             logger.info(f"Sending update request to Gemini with transcribed comment: {user_comment}")
-            updated_json, processing_time = update_receipt_with_comment(original_json, user_comment)
+            custom_prompt = get_user_custom_prompt(user_id)
+            updated_json, processing_time = update_receipt_with_comment(original_json, user_comment, custom_prompt=custom_prompt)
             logger.info("Successfully received updated JSON from Gemini")
             
             # Validate and sanitize the response
@@ -729,7 +734,8 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     try:
         await update.message.reply_text("📝 Processing your text receipt...")
         logger.info("Converting text to receipt structure via Gemini")
-        gemini_output, processing_time = parse_voice_to_receipt(user_text)
+        custom_prompt = get_user_custom_prompt(user.id)
+        gemini_output, processing_time = parse_voice_to_receipt(user_text, custom_prompt=custom_prompt)
         logger.info("Successfully received receipt structure from Gemini for text input")
 
         # Validate and sanitize the response

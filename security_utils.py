@@ -187,7 +187,7 @@ class InputValidator:
         # Validate numeric fields
         try:
             total_amount = float(data['total_amount'])
-            if total_amount < 0 or total_amount > 1000000:  # Reasonable limits
+            if total_amount < 0 or total_amount > 100000000:  # 100M ceiling (covers high-rate currency conversions)
                 raise SecurityException("Invalid total amount")
             data['total_amount'] = total_amount
         except (ValueError, TypeError):

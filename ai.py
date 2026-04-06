@@ -154,6 +154,10 @@ User description: "{user_text}\""""
 
 VOICE_TRANSCRIPTION_PROMPT = "Transcribe this voice message to text (English or Russian). Return only the transcribed text."
 
+CUSTOM_USER_PROMPT_INSTRUCTION = """
+Additional user-defined instructions:
+{custom_prompt}"""
+
 # =============================================================================
 # BASE AI PROVIDER INTERFACE
 # =============================================================================
@@ -393,7 +397,7 @@ class GeminiProvider(AIProvider):
             logger.error(redact_sensitive_data(error_message))
             raise
     
-    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
+    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
         """Parse receipt image or PDF using Gemini."""
         logger.info(f"Reading receipt file from {image_path}")
         user_comment_text = user_comment.strip() if user_comment else ""
@@ -417,6 +421,9 @@ class GeminiProvider(AIProvider):
                 receipt_structure=RECEIPT_JSON_STRUCTURE,
                 current_date=current_date
             )
+
+        if custom_prompt:
+            prompt += CUSTOM_USER_PROMPT_INSTRUCTION.format(custom_prompt=custom_prompt)
         
         # Determine MIME type based on file extension
         file_ext = os.path.splitext(image_path)[1].lower()
@@ -461,20 +468,23 @@ class GeminiProvider(AIProvider):
         response_text = result["candidates"][0]["content"]["parts"][0]["text"]
         return parse_json_response(response_text, "parsing")
     
-    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
+    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
         """Update receipt data with user comment using Gemini."""
         logger.info(f"Updating receipt data with user comment: {user_comment}")
-        
+
         current_date = datetime.now().strftime("%d-%m-%Y")
         logger.debug(f"Using current date: {current_date}")
-        
+
         prompt = UPDATE_RECEIPT_PROMPT.format(
             original_json=original_json,
             user_comment=user_comment,
             user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment),
             current_date=current_date
         )
-        
+
+        if custom_prompt:
+            prompt += CUSTOM_USER_PROMPT_INSTRUCTION.format(custom_prompt=custom_prompt)
+
         payload = {
             "contents": [
                 {
@@ -525,10 +535,10 @@ class GeminiProvider(AIProvider):
         
         return transcribed_text
     
-    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
+    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
         """Convert transcribed voice text to receipt structure using Gemini."""
         logger.info(f"Converting voice text to receipt structure: {transcribed_text[:100]}...")
-        
+
         current_date = datetime.now().strftime("%d-%m-%Y")
         logger.debug(f"Using current date: {current_date}")
 
@@ -537,7 +547,10 @@ class GeminiProvider(AIProvider):
             user_text=transcribed_text,
             current_date=current_date
         )
-        
+
+        if custom_prompt:
+            prompt += CUSTOM_USER_PROMPT_INSTRUCTION.format(custom_prompt=custom_prompt)
+
         payload = {
             "contents": [
                 {
@@ -619,7 +632,7 @@ class OpenAIProvider(AIProvider):
             logger.error(redact_sensitive_data(error_message))
             raise
     
-    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
+    def parse_receipt_image(self, image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
         """Parse receipt image using OpenAI."""
         logger.info(f"Reading receipt image from {image_path}")
         user_comment_text = user_comment.strip() if user_comment else ""
@@ -643,6 +656,9 @@ class OpenAIProvider(AIProvider):
                 receipt_structure=RECEIPT_JSON_STRUCTURE,
                 current_date=current_date
             )
+
+        if custom_prompt:
+            prompt += CUSTOM_USER_PROMPT_INSTRUCTION.format(custom_prompt=custom_prompt)
         
         # Read and encode image
         with open(image_path, "rb") as img_file:
@@ -688,20 +704,23 @@ class OpenAIProvider(AIProvider):
         response_text = result["choices"][0]["message"]["content"]
         return parse_json_response(response_text, "parsing")
     
-    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
+    def update_receipt_with_comment(self, original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
         """Update receipt data with user comment using OpenAI."""
         logger.info(f"Updating receipt data with user comment: {user_comment}")
-        
+
         current_date = datetime.now().strftime("%d-%m-%Y")
         logger.debug(f"Using current date: {current_date}")
-        
+
         prompt = UPDATE_RECEIPT_PROMPT.format(
             original_json=original_json,
             user_comment=user_comment,
             user_adjustment_instructions=USER_ADJUSTMENT_INSTRUCTIONS.format(user_comment=user_comment),
             current_date=current_date
         )
-        
+
+        if custom_prompt:
+            prompt += CUSTOM_USER_PROMPT_INSTRUCTION.format(custom_prompt=custom_prompt)
+
         messages = [
             {"role": "system", "content": "You are an expert at updating receipt data based on user feedback."},
             {"role": "user", "content": prompt}
@@ -750,10 +769,10 @@ class OpenAIProvider(AIProvider):
                 logger.error(redact_sensitive_data(error_message))
                 raise
     
-    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
+    def parse_voice_to_receipt(self, transcribed_text: str, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
         """Convert transcribed voice text to receipt structure using OpenAI."""
         logger.info(f"Converting voice text to receipt structure: {transcribed_text[:100]}...")
-        
+
         current_date = datetime.now().strftime("%d-%m-%Y")
         logger.debug(f"Using current date: {current_date}")
 
@@ -762,7 +781,10 @@ class OpenAIProvider(AIProvider):
             user_text=transcribed_text,
             current_date=current_date
         )
-        
+
+        if custom_prompt:
+            prompt += CUSTOM_USER_PROMPT_INSTRUCTION.format(custom_prompt=custom_prompt)
+
         messages = [
             {"role": "system", "content": "You are an expert at converting voice descriptions into structured receipt data."},
             {"role": "user", "content": prompt}
@@ -805,14 +827,14 @@ def _get_provider() -> AIProvider:
 # PUBLIC API FUNCTIONS
 # =============================================================================
 @time_ai_operation("Receipt image parsing")
-def parse_receipt_image(image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None) -> str:
+def parse_receipt_image(image_path: str, user_comment: Optional[str] = None, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
     """Parse receipt image and return structured data as JSON string."""
-    return _get_provider().parse_receipt_image(image_path, user_comment, cancel_event)
+    return _get_provider().parse_receipt_image(image_path, user_comment, cancel_event, custom_prompt)
 
 @time_ai_operation("Receipt update with comment")
-def update_receipt_with_comment(original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None) -> str:
+def update_receipt_with_comment(original_json: str, user_comment: str, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
     """Update receipt data based on user comment."""
-    return _get_provider().update_receipt_with_comment(original_json, user_comment, cancel_event)
+    return _get_provider().update_receipt_with_comment(original_json, user_comment, cancel_event, custom_prompt)
 
 @time_ai_operation("Voice to text conversion")
 def convert_voice_to_text(voice_file_path: str, cancel_event: Optional[threading.Event] = None) -> str:
@@ -820,6 +842,6 @@ def convert_voice_to_text(voice_file_path: str, cancel_event: Optional[threading
     return _get_provider().convert_voice_to_text(voice_file_path, cancel_event)
 
 @time_ai_operation("Voice to receipt parsing")
-def parse_voice_to_receipt(transcribed_text: str, cancel_event: Optional[threading.Event] = None) -> str:
+def parse_voice_to_receipt(transcribed_text: str, cancel_event: Optional[threading.Event] = None, custom_prompt: Optional[str] = None) -> str:
     """Convert transcribed voice text to structured receipt data."""
-    return _get_provider().parse_voice_to_receipt(transcribed_text, cancel_event)
+    return _get_provider().parse_voice_to_receipt(transcribed_text, cancel_event, custom_prompt)

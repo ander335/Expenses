@@ -29,6 +29,7 @@ class User(Base):
     # Authorization fields (no is_admin; single admin via TELEGRAM_ADMIN_ID)
     is_authorized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     approval_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    custom_ai_prompt: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receipts: Mapped[List["Receipt"]] = relationship("Receipt", back_populates="user")
 
 @dataclass
@@ -154,6 +155,9 @@ def migrate_database():
                 if 'approval_requested' not in user_columns:
                     logger.info("Adding 'approval_requested' column to users table...")
                     conn.exec_driver_sql("ALTER TABLE users ADD COLUMN approval_requested BOOLEAN NOT NULL DEFAULT 0")
+                if 'custom_ai_prompt' not in user_columns:
+                    logger.info("Adding 'custom_ai_prompt' column to users table...")
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN custom_ai_prompt TEXT")
         else:
             logger.info("Users table doesn't exist yet, will be created by create_all()")
 
@@ -225,6 +229,25 @@ def set_user_approval_requested(user_id: int, requested: bool = True) -> None:
         if not user:
             return
         user.approval_requested = requested
+        session.commit()
+    finally:
+        session.close()
+
+def get_user_custom_prompt(user_id: int) -> Optional[str]:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(user_id=user_id).first()
+        return user.custom_ai_prompt if user else None
+    finally:
+        session.close()
+
+def set_user_custom_prompt(user_id: int, prompt: Optional[str]) -> None:
+    session = Session()
+    try:
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if not user:
+            return
+        user.custom_ai_prompt = prompt
         session.commit()
     finally:
         session.close()

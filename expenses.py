@@ -33,6 +33,7 @@ from groups import (
     show_group_info, create_group_cmd, join_group_cmd, leave_group_cmd,
     add_user_to_group_admin, remove_user_from_group_admin, list_all_groups_admin, delete_group_admin
 )
+from prompt_settings import build_prompt_conv_handler
 
 def get_admin_user_id() -> int:
     # TELEGRAM_ADMIN_ID is guaranteed valid by auth_data import
@@ -52,6 +53,8 @@ HELP_TEXT = (
     "\n👥 Groups:\n"
     "• /group - show current group info\n"
     "• /leavegroup - leave your current group\n"
+    "\n⚙️ Settings:\n"
+    "• /prompt - view or edit your custom AI instructions (e.g. currency conversion rules)\n"
     "\n💡 When in a group, you'll see expenses from all group members."
 )
 
@@ -454,6 +457,9 @@ def main():
     
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # Prompt settings conversation handler (must be registered before the receipt handler)
+    application.add_handler(build_prompt_conv_handler(check_user_access))
+
     # Create conversation handler for photo processing
     conv_handler = ConversationHandler(
         entry_points=[
