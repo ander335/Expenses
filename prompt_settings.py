@@ -20,6 +20,20 @@ async def show_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, check_
 
     user_id = update.effective_user.id
     logger.info(f"[PROMPT] Showing prompt menu for user {user_id}")
+
+    # Deactivate buttons on any previous prompt message
+    prev_msg_id = context.user_data.get("prompt_message_id")
+    if prev_msg_id:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=update.effective_chat.id,
+                message_id=prev_msg_id,
+                reply_markup=None,
+            )
+        except Exception as e:
+            logger.warning(f"[PROMPT] Could not deactivate old prompt message buttons: {e}")
+        context.user_data.pop("prompt_message_id", None)
+
     current_prompt = get_user_custom_prompt(user_id)
 
     if current_prompt:
@@ -38,7 +52,8 @@ async def show_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, check_
         )
         buttons = [[InlineKeyboardButton("✏️ Set instructions", callback_data="prompt_edit")]]
 
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    sent = await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    context.user_data["prompt_message_id"] = sent.message_id
     return AWAITING_PROMPT_ACTION
 
 
@@ -48,6 +63,7 @@ async def handle_prompt_edit_callback(update: Update, context: ContextTypes.DEFA
     await query.answer()
     user_id = query.from_user.id
     logger.info(f"[PROMPT] Edit button clicked by user {user_id}")
+    context.user_data.pop("prompt_message_id", None)
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as e:
@@ -65,6 +81,7 @@ async def handle_prompt_clear_callback(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    context.user_data.pop("prompt_message_id", None)
     set_user_custom_prompt(user_id, None)
     logger.info(f"[PROMPT] Cleared custom AI prompt for user {user_id}")
     try:
@@ -128,4 +145,5 @@ def build_prompt_conv_handler(check_user_access_func) -> ConversationHandler:
         },
         fallbacks=[CommandHandler("cancel", cancel_prompt)],
         per_message=False,
+        allow_reentry=True,
     )

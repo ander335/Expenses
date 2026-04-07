@@ -209,7 +209,8 @@ async def handle_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     file_type: 'photo' for photos, 'document' for PDFs/JPEGs
     """
     user = update.effective_user
-    logger.info(f"[EXPENSES_CREATE] Received {file_type} file from user {user.full_name} (ID: {user.id})")
+    user_id = user.id
+    logger.info(f"[EXPENSES_CREATE] Received {file_type} file from user {user.full_name} (ID: {user_id})")
     
     if not await check_user_access_func(update, context):
         logger.warning(f"[EXPENSES_CREATE] Access denied for {file_type} upload from user {user.id}")
@@ -282,7 +283,6 @@ async def handle_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return ConversationHandler.END
             
             # Parse the receipt data into object
-            user_id = update.effective_user.id
             logger.info(f"Parsing AI service output for user {user_id}")
             parsed_receipt = parse_receipt_from_gemini(gemini_output, user_id)
             logger.info(f"Receipt parsed successfully: {parsed_receipt.merchant}, {parsed_receipt.total_amount:.2f}, {len(parsed_receipt.positions)} items")
