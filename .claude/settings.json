@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gcloud run:*)"
+      "Bash(gcloud run:*)",
+      "Bash(python trello/trello_client.py *)"
     ]
   }
 }

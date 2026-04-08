@@ -11,6 +11,24 @@ from db import Session, Receipt
 from ai import format_category_with_emoji, get_category_emoji
 from expenses_create import format_receipt_for_display
 
+async def send_long_message(update: Update, text: str, max_length: int = 4096):
+    """Send a message, splitting into chunks if it exceeds Telegram's limit."""
+    if len(text) <= max_length:
+        await update.message.reply_text(text, reply_markup=get_persistent_keyboard())
+        return
+    lines = text.split("\n")
+    chunk = ""
+    first = True
+    for line in lines:
+        if len(chunk) + len(line) + 1 > max_length:
+            await update.message.reply_text(chunk, reply_markup=get_persistent_keyboard() if first else None)
+            first = False
+            chunk = line + "\n"
+        else:
+            chunk += line + "\n"
+    if chunk:
+        await update.message.reply_text(chunk, reply_markup=get_persistent_keyboard())
+
 def get_persistent_keyboard(show_summary=True):
     button_text = "📊 Summary" if show_summary else "📈 Details"
     button_data = "persistent_summary" if show_summary else "persistent_detailed_summary"
@@ -274,8 +292,8 @@ async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE, chec
 
     receipts = get_last_n_receipts(update.effective_user.id, n)
     formatted_text = format_receipts_list(receipts, f"Last {n} receipts", update.effective_user.id)
-    
-    await update.message.reply_text(formatted_text, reply_markup=get_persistent_keyboard())
+
+    await send_long_message(update, formatted_text)
 
 async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
     user = update.effective_user

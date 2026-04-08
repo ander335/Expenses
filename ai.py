@@ -89,7 +89,7 @@ def get_category_emoji(category: str) -> str:
 
 RECEIPT_JSON_STRUCTURE = """{
     "description": "brief description of the receipt. Important: do not describe individual items in the description nor mention what was purcesed. Do not aggregate history of user changes if any, only the final state",
-    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description. In case of positions with multiple categories, choose the category of the most expensive positions",
+    "category": "closest matching category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the exact category name as listed (e.g. 'gifts' not 'gift'), not the description. In case of positions with multiple categories, choose the category of the most expensive positions",
     "merchant": "name of the store or merchant or income source. Return 'Unknown' if not available. Never return empty string",
     "is_income": "By default false. true if this is income/refund/return/sold items/gift/salary. Return as boolean (true or false)",
     "reference_receipts_ids": "Optional: array of receipt IDs that this receipt is associated with (e.g. reimbursement for original expenses). Only fill if user explicitly provides receipt IDs for linking purposes. Return empty array otherwise",
@@ -97,7 +97,7 @@ RECEIPT_JSON_STRUCTURE = """{
         {
             "description": "item description",
             "quantity": "item quantity as a number or weight",
-            "category": "item category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the category name, not the description",
+            "category": "item category name from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Respond with ONLY the exact category name as listed (e.g. 'gifts' not 'gift'), not the description",
             "price": "item price as a number. If this value is negative, most likly it is a discount. Ignore negative positions."
         }
     ],
@@ -135,6 +135,7 @@ Return ONLY the updated JSON object, nothing else. Update "description" field to
 Date handling: If user provides date without year, use current year. Format as DD-MM-YYYY.
 Language: Keep original language unless explicitly changed. Description field in ENGLISH.
 Currency conversion: If requested, apply to all amounts and include the exchange rate used in the description (e.g., "Converted from EUR to CZK at rate 1 EUR = 25.2 CZK").
+Categories: Use ONLY exact category names from this list: """ + CATEGORY_LIST_FOR_PROMPT + """. Never use variations like "gift" instead of "gifts".
 
 {user_adjustment_instructions}\""""
 
