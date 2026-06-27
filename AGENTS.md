@@ -1,6 +1,6 @@
 # Expenses
-Read `./.github/copilot-instractions.md`
-These instructions apply to Codex, Claude Code, GitHub Copilot, and any other coding agent working in this repository.
+- These instructions apply to Codex, Claude Code, GitHub Copilot, and any other coding agent working in this repository.
+- The bot cannot be run locally for testing. It is designed to be run only in cloud. Any verification should be performed by user manually.
 
 ## Repository Skills
 - Before starting a task, inspect the repo-local `skills/` folder for a skill that matches the user's request.
@@ -8,10 +8,6 @@ These instructions apply to Codex, Claude Code, GitHub Copilot, and any other co
 
 ## Available Common Skills
 - Common skills are stored one repo level above this repository in `..\Common\AI\skills`.
-
-## Instructions
-- Do not run bot locally, it is designed to run in cloud environment only.
-- Don't use pylance MCP. Compile and run .py files locally.
 
 ## Writing code
 - When writing new code, add detailed logging using the `logger` object from `logger_config.py`.

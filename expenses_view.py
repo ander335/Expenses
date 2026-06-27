@@ -302,22 +302,24 @@ async def delete_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if not await check_user_access_func(update, context):
         return
     
-    try:
-        receipt_id = int(context.args[0])
-        logger.info(f"Attempting to delete receipt {receipt_id} for user {user.id}")
-    except (IndexError, ValueError):
-        logger.warning(f"Invalid delete command argument from user {user.id}")
-        await update.message.reply_text("Please specify a receipt ID: /delete ID", reply_markup=get_persistent_keyboard())
-        return
+    receipt_id = None
+    if context.args:
+        try:
+            receipt_id = int(context.args[0])
+        except ValueError:
+            logger.warning(f"Invalid delete command argument from user {user.id}")
+            await update.message.reply_text("Invalid receipt ID. Usage: /delete [ID]", reply_markup=get_persistent_keyboard())
+            return
+    logger.info(f"Attempting to delete receipt {receipt_id if receipt_id is not None else '(latest)'} for user {user.id}")
 
     try:
         # Check if user is admin - import here to avoid circular imports
         from auth_data import TELEGRAM_ADMIN_ID
         is_admin = user.id == TELEGRAM_ADMIN_ID
-        
+
         result = delete_receipt(receipt_id, user.id, is_admin=is_admin)
         await update.message.reply_text(result['message'], reply_markup=get_persistent_keyboard())
-        
+
     except Exception as e:
         logger.error(f"Error deleting receipt {receipt_id} for user {user.id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Failed to delete receipt: {str(e)}", reply_markup=get_persistent_keyboard())

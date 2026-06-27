@@ -436,18 +436,28 @@ def get_last_n_receipts(user_id: int, n: int) -> List[Receipt]:
     finally:
         session.close()
 
-def delete_receipt(receipt_id: int, user_id: int, is_admin: bool = False) -> dict:
+def delete_receipt(receipt_id: Optional[int], user_id: int, is_admin: bool = False) -> dict:
     """
-    Delete a receipt by ID. 
+    Delete a receipt by ID.
     Returns dict with 'success': bool and 'message': str indicating the result.
-    
+
     Args:
-        receipt_id: The ID of the receipt to delete
+        receipt_id: The ID of the receipt to delete, or None to delete the most recent one
         user_id: The ID of the user requesting deletion
         is_admin: True if the user is an admin (can delete any receipt)
     """
     session = Session()
     try:
+        if receipt_id is None:
+            latest = session.query(Receipt)\
+                .filter_by(user_id=user_id)\
+                .order_by(Receipt.receipt_id.desc())\
+                .first()
+            if not latest:
+                return {'success': False, 'message': 'No receipts found to delete.'}
+            receipt_id = latest.receipt_id
+            logger.info(f"No receipt ID provided by user {user_id}; resolved to latest receipt {receipt_id}")
+
         # If admin, search for any receipt with the ID
         if is_admin:
             receipt = session.query(Receipt)\
