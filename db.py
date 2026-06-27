@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional, ClassVar
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
+from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column, joinedload
 from cloud_storage import CloudStorage
 from logger_config import logger
 
@@ -499,6 +499,107 @@ def delete_receipt(receipt_id: Optional[int], user_id: int, is_admin: bool = Fal
         raise
     finally:
         session.close()
+
+def get_receipt_for_edit(receipt_id: Optional[int], user_id: int, is_admin: bool = False) -> dict:
+    """
+    Load a receipt (with positions and related IDs) for editing.
+    Returns {'success': bool, 'receipt': Optional[Receipt], 'receipt_id': Optional[int], 'message': str}.
+    The returned Receipt is detached from the session but has positions and reference_receipts_ids populated.
+    """
+    session = Session()
+    try:
+        if receipt_id is None:
+            latest = session.query(Receipt)\
+                .filter_by(user_id=user_id)\
+                .order_by(Receipt.receipt_id.desc())\
+                .first()
+            if not latest:
+                return {'success': False, 'receipt': None, 'receipt_id': None, 'message': 'No receipts found to edit.'}
+            receipt_id = latest.receipt_id
+            logger.info(f"No receipt ID provided by user {user_id}; resolved to latest receipt {receipt_id}")
+
+        if is_admin:
+            receipt = session.query(Receipt)\
+                .options(joinedload(Receipt.positions))\
+                .filter_by(receipt_id=receipt_id)\
+                .first()
+            if not receipt:
+                return {'success': False, 'receipt': None, 'receipt_id': None, 'message': f'Receipt {receipt_id} not found.'}
+            if receipt.user_id != user_id:
+                receipt_owner = session.query(User).filter_by(user_id=receipt.user_id).first()
+                owner_name = receipt_owner.name if receipt_owner else f"User {receipt.user_id}"
+                logger.warning(f"ADMIN ACTION: User {user_id} (admin) loading receipt {receipt_id} belonging to {owner_name} for editing")
+        else:
+            receipt = session.query(Receipt)\
+                .options(joinedload(Receipt.positions))\
+                .filter_by(receipt_id=receipt_id, user_id=user_id)\
+                .first()
+            if not receipt:
+                other = session.query(Receipt).filter_by(receipt_id=receipt_id).first()
+                if other:
+                    logger.warning(f"SECURITY: User {user_id} attempted to edit receipt {receipt_id} belonging to user {other.user_id}")
+                    return {'success': False, 'receipt': None, 'receipt_id': None, 'message': f'Receipt {receipt_id} not found or you do not have permission to edit it.'}
+                return {'success': False, 'receipt': None, 'receipt_id': None, 'message': f'Receipt {receipt_id} not found.'}
+
+        # Load related receipt IDs before closing session
+        from sqlalchemy import or_
+        relations = session.query(ReceiptRelation).filter(
+            or_(ReceiptRelation.receipt_id_1 == receipt_id, ReceiptRelation.receipt_id_2 == receipt_id)
+        ).all()
+        related_ids = [
+            r.receipt_id_2 if r.receipt_id_1 == receipt_id else r.receipt_id_1
+            for r in relations
+        ]
+        receipt.reference_receipts_ids = related_ids
+
+        resolved_id = receipt.receipt_id
+        session.expunge_all()
+        return {'success': True, 'receipt': receipt, 'receipt_id': resolved_id, 'message': ''}
+
+    except Exception:
+        raise
+    finally:
+        session.close()
+
+
+def update_receipt(receipt_id: int, updated_receipt: Receipt) -> None:
+    """Update an existing receipt's fields and positions in-place."""
+    session = Session()
+    try:
+        existing = session.query(Receipt)\
+            .options(joinedload(Receipt.positions))\
+            .filter_by(receipt_id=receipt_id)\
+            .first()
+        if not existing:
+            raise ValueError(f'Receipt {receipt_id} not found.')
+
+        existing.merchant = updated_receipt.merchant
+        existing.category = updated_receipt.category
+        existing.total_amount = updated_receipt.total_amount
+        existing.is_income = updated_receipt.is_income
+        existing.date = updated_receipt.date
+        existing.text = updated_receipt.text
+        existing.description = updated_receipt.description
+
+        # Replace positions (cascade delete-orphan handles old ones)
+        existing.positions = []
+        session.flush()
+        for pos in updated_receipt.positions:
+            existing.positions.append(Position(
+                description=pos.description,
+                quantity=pos.quantity,
+                category=pos.category,
+                price=pos.price
+            ))
+
+        session.commit()
+        logger.info(f"Receipt {receipt_id} updated successfully")
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 
 def get_receipts_by_date(user_id: int, date_str: str) -> List[Receipt]:
     """Get receipts for a specific date for user and their group members. Date format should be DD-MM-YYYY."""

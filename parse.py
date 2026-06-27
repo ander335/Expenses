@@ -91,6 +91,30 @@ def parse_receipt_data(data: Dict[str, Any], user_id: int) -> Receipt:
     
     return receipt
 
+def receipt_to_json(receipt: Receipt) -> str:
+    """Serialize a Receipt object back to a JSON string compatible with update_receipt_with_comment()."""
+    data = {
+        "merchant": receipt.merchant,
+        "category": receipt.category,
+        "total_amount": receipt.total_amount,
+        "is_income": receipt.is_income,
+        "date": receipt.date,
+        "description": receipt.description,
+        "text": receipt.text or "",
+        "positions": [
+            {
+                "description": pos.description,
+                "quantity": pos.quantity,
+                "category": pos.category,
+                "price": pos.price
+            }
+            for pos in (receipt.positions or [])
+        ],
+        "reference_receipts_ids": getattr(receipt, 'reference_receipts_ids', None) or []
+    }
+    return json.dumps(data)
+
+
 def parse_receipt_from_file(file_path: str, user_id: int) -> Receipt:
     """Read receipt data from a JSON file and convert it to a Receipt object."""
     try:

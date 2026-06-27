@@ -5,13 +5,13 @@ from telegram.ext import ContextTypes, ConversationHandler
 from logger_config import logger
 import time
 import json
-from parse import parse_receipt_from_gemini
+from parse import parse_receipt_from_gemini, receipt_to_json
 from ai import parse_receipt_image, update_receipt_with_comment, convert_voice_to_text, parse_voice_to_receipt, AIServiceMalformedJSONError, format_category_with_emoji, get_category_emoji
 from security_utils import (
     SecurityException, file_handler, InputValidator,
     ALLOWED_IMAGE_TYPES, ALLOWED_AUDIO_TYPES, ALLOWED_DOCUMENT_TYPES
 )
-from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt, get_receipt, get_user, get_group_user_ids, get_user_custom_prompt
+from db import add_receipt, get_or_create_user, User, create_receipt_relations, delete_receipt, get_receipt, get_user, get_group_user_ids, get_user_custom_prompt, get_receipt_for_edit, update_receipt
 
 # States for conversation handler
 AWAITING_APPROVAL = 1
@@ -112,7 +112,8 @@ def format_receipt_for_display(receipt):
 async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None):
     """Send a preview of the parsed receipt with Approve/Reject buttons and store temp data."""
     user_id = update.effective_user.id
-    # Store the parsed receipt object and original JSON
+    # Preserve editing_receipt_id if this is a re-display mid-edit session
+    editing_receipt_id = receipt_data.get(user_id, {}).get("editing_receipt_id")
     timestamp = str(int(time.time()))
     receipt_data[user_id] = {
         "parsed_receipt": parsed_receipt,
@@ -121,6 +122,8 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
         "latest_timestamp": timestamp,
         "latest_message_id": None
     }
+    if editing_receipt_id is not None:
+        receipt_data[user_id]["editing_receipt_id"] = editing_receipt_id
 
     # Format the output for display
     output_text = f"{preface}\n\n"
@@ -197,6 +200,57 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
     receipt_data[user_id]["latest_message_id"] = sent_message.message_id
     logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
     return AWAITING_APPROVAL
+
+async def edit_receipt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
+    """Handler for /edit [ID] — loads an existing receipt into the approval session."""
+    user = update.effective_user
+    user_id = user.id
+    logger.info(f"Edit command received from user {user.full_name} (ID: {user_id})")
+
+    if not await check_user_access_func(update, context):
+        return ConversationHandler.END
+
+    receipt_id = None
+    if context.args:
+        try:
+            receipt_id = int(context.args[0])
+        except ValueError:
+            logger.warning(f"Invalid edit command argument from user {user_id}")
+            await update.message.reply_text("Invalid receipt ID. Usage: /edit [ID]", reply_markup=get_persistent_keyboard())
+            return ConversationHandler.END
+
+    try:
+        from auth_data import TELEGRAM_ADMIN_ID
+        is_admin = user_id == TELEGRAM_ADMIN_ID
+
+        result = get_receipt_for_edit(receipt_id, user_id, is_admin=is_admin)
+        if not result['success']:
+            await update.message.reply_text(result['message'], reply_markup=get_persistent_keyboard())
+            return ConversationHandler.END
+
+        receipt = result['receipt']
+        resolved_id = result['receipt_id']
+        original_json = receipt_to_json(receipt)
+
+        # Clear any existing in-progress session for this user
+        if user_id in receipt_data:
+            del receipt_data[user_id]
+
+        await present_parsed_receipt(
+            update,
+            context,
+            parsed_receipt=receipt,
+            original_json=original_json,
+            preface=f"✏️ Editing receipt #{resolved_id}. Here's what it contains:"
+        )
+        receipt_data[user_id]["editing_receipt_id"] = resolved_id
+        return AWAITING_APPROVAL
+
+    except Exception as e:
+        logger.error(f"Error loading receipt for editing (user {user_id}): {str(e)}", exc_info=True)
+        await update.message.reply_text("Failed to load receipt for editing. Please try again.", reply_markup=get_persistent_keyboard())
+        return ConversationHandler.END
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
     """Handler for photo receipt uploads."""
@@ -360,28 +414,40 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Get the already parsed receipt and save it
             receipt = user_data["parsed_receipt"]
-            logger.info(f"Saving receipt to database: {receipt.merchant}, {receipt.total_amount:.2f}")
-            receipt_id = add_receipt(receipt)
-            logger.info(f"Receipt saved successfully with ID: {receipt_id}")
-            
-            # Extract and create receipt relations if any
-            try:
-                related_ids = receipt.reference_receipts_ids
-                if related_ids:
-                    logger.info(f"Creating receipt relations for receipt {receipt_id} with {len(related_ids)} references")
-                    create_receipt_relations(receipt_id, related_ids)
-            except Exception as e:
-                # Rollback: delete the receipt if relations creation fails
-                logger.error(f"Failed to create receipt relations: {str(e)}. Rolling back receipt addition.")
-                delete_receipt(receipt_id, user_id)
-                raise
-            
-            # Remove buttons from original message but keep the content
-            await query.edit_message_reply_markup(reply_markup=None)
-            logger.info(f"Removed approval buttons from receipt summary message for user {user_id}")
-            
-            # Send approval message
-            await query.message.reply_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
+            editing_receipt_id = user_data.get("editing_receipt_id")
+
+            if editing_receipt_id is not None:
+                # Edit mode: update existing receipt in-place
+                logger.info(f"Updating existing receipt {editing_receipt_id}: {receipt.merchant}, {receipt.total_amount:.2f}")
+                update_receipt(editing_receipt_id, receipt)
+                logger.info(f"Receipt {editing_receipt_id} updated successfully")
+
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(f"✅ Receipt {editing_receipt_id} updated successfully!", reply_markup=get_persistent_keyboard())
+            else:
+                # New receipt mode: insert as usual
+                logger.info(f"Saving receipt to database: {receipt.merchant}, {receipt.total_amount:.2f}")
+                receipt_id = add_receipt(receipt)
+                logger.info(f"Receipt saved successfully with ID: {receipt_id}")
+
+                # Extract and create receipt relations if any
+                try:
+                    related_ids = receipt.reference_receipts_ids
+                    if related_ids:
+                        logger.info(f"Creating receipt relations for receipt {receipt_id} with {len(related_ids)} references")
+                        create_receipt_relations(receipt_id, related_ids)
+                except Exception as e:
+                    # Rollback: delete the receipt if relations creation fails
+                    logger.error(f"Failed to create receipt relations: {str(e)}. Rolling back receipt addition.")
+                    delete_receipt(receipt_id, user_id)
+                    raise
+
+                # Remove buttons from original message but keep the content
+                await query.edit_message_reply_markup(reply_markup=None)
+                logger.info(f"Removed approval buttons from receipt summary message for user {user_id}")
+
+                # Send approval message
+                await query.message.reply_text(f"✅ Receipt saved successfully! Receipt ID: {receipt_id}", reply_markup=get_persistent_keyboard())
         except Exception as e:
             logger.error(f"Failed to save receipt for user {user_id}: {str(e)}", exc_info=True)
             # Remove buttons from original message but keep the content

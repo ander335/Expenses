@@ -22,7 +22,7 @@ from security_utils import (
 # Import the new modular components
 from expenses_create import (
     handle_photo, handle_receipt_file, handle_voice_receipt, handle_approval, handle_user_comment, 
-    handle_voice_comment, add_text_receipt, AWAITING_APPROVAL
+    handle_voice_comment, add_text_receipt, edit_receipt_cmd, AWAITING_APPROVAL
 )
 from expenses_view import (
     list_receipts, delete_receipt_cmd, show_receipts_by_date, show_summary,
@@ -48,6 +48,7 @@ HELP_TEXT = (
     "\n📋 View expenses:\n"
     "• /list N - show last N added expenses\n"
     "• /delete ID - delete your receipt\n"
+    "• /edit [ID] - edit an existing receipt (omit ID to edit the latest)\n"
     "• /summary N - show monthly net summary for last N months\n"
     "• /detailed_summary N - show detailed summary with categories breakdown for last N months\n"
     "\n👥 Groups:\n"
@@ -467,12 +468,14 @@ def main():
             MessageHandler(filters.VOICE, lambda update, context: handle_voice_receipt(update, context, check_user_access)),
             MessageHandler(filters.Document.PDF | filters.Document.MimeType("image/jpeg"), lambda update, context: handle_receipt_file(update, context, check_user_access, file_type="document")),
             CommandHandler('add', lambda update, context: add_text_receipt(update, context, check_user_access)),
+            CommandHandler('edit', lambda update, context: edit_receipt_cmd(update, context, check_user_access)),
         ],
         states={
             AWAITING_APPROVAL: [
                 CallbackQueryHandler(handle_approval, pattern="^(approve|reject)_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_comment),
-                MessageHandler(filters.VOICE, handle_voice_comment)
+                MessageHandler(filters.VOICE, handle_voice_comment),
+                CommandHandler('edit', lambda update, context: edit_receipt_cmd(update, context, check_user_access)),
             ]
         },
         fallbacks=[]
