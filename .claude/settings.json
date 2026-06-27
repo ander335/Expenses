@@ -1,8 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gcloud run:*)",
-      "Bash(python trello/trello_client.py *)"
+      "Bash(gcloud run:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": ["trello_expenses"]
 }

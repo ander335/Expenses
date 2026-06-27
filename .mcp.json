@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "trello_expenses": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "X-Trello-Key": "${TRELLO_EXPENSES_KEY}",
+        "X-Trello-Token": "${TRELLO_EXPENSES_TOKEN}"
+      }
+    }
+  }
+}
