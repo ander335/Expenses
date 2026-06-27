@@ -9,6 +9,13 @@ These instructions apply to Codex, Claude Code, GitHub Copilot, and any other co
 ## Available Common Skills
 - Common skills are stored one repo level above this repository in `..\Common\AI\skills`.
 
-## Running deploy from bash
-To run `cloud_deploy.bat` via the Bash tool, use:
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Location 'G:\projects\Expenses'; .\cloud_deploy.bat"`
+## Instructions
+- Do not run bot locally, it is designed to run in cloud environment only.
+- Don't use pylance MCP. Compile and run .py files locally.
+
+## Writing code
+- When writing new code, add detailed logging using the `logger` object from `logger_config.py`.
+- Writing code, make sure there is no similar logic, functions or blocks. If there is any, try to generalize it and use in both places.
+- Keep function docstrings concise: use single-line comments only, no multi-line docstrings with Args/Returns sections.
+- Do not test bot functionality by writing simple scripts. Deploy it to cloud right away instead.
+- Important! Do not create any diagrams, not README files, not documentation, unless explicitly instructed to do so. This only consumes time and LLM tokens without adding value.
