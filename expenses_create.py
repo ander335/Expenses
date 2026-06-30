@@ -109,23 +109,8 @@ def format_receipt_for_display(receipt):
     
     return f"{receipt.receipt_id} | {date} | {emoji_display} | {amount} | {merchant}"
 
-async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None):
-    """Send a preview of the parsed receipt with Approve/Reject buttons and store temp data."""
-    user_id = update.effective_user.id
-    # Preserve editing_receipt_id if this is a re-display mid-edit session
-    editing_receipt_id = receipt_data.get(user_id, {}).get("editing_receipt_id")
-    timestamp = str(int(time.time()))
-    receipt_data[user_id] = {
-        "parsed_receipt": parsed_receipt,
-        "original_json": original_json,
-        "user_comment": None,
-        "latest_timestamp": timestamp,
-        "latest_message_id": None
-    }
-    if editing_receipt_id is not None:
-        receipt_data[user_id]["editing_receipt_id"] = editing_receipt_id
-
-    # Format the output for display
+def _build_receipt_display_text(parsed_receipt, preface: str, user_text_line: str | None, user_id: int) -> str:
+    """Build the formatted display text for a parsed receipt."""
     output_text = f"{preface}\n\n"
     if user_text_line:
         output_text += f"{user_text_line}\n\n"
@@ -138,40 +123,33 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
         output_text += f"Category: {format_category_with_emoji(parsed_receipt.category)}\n"
     output_text += f"Total Amount: {parsed_receipt.total_amount}\n"
     output_text += f"Date: {parsed_receipt.date or 'Unknown'}\n"
-    
+
     if parsed_receipt.positions and len(parsed_receipt.positions) > 0:
         output_text += f"Items ({len(parsed_receipt.positions)}):\n"
-        
-        # Group items by category
+
         items_by_category = {}
         for pos in parsed_receipt.positions:
             category = pos.category
             if category not in items_by_category:
                 items_by_category[category] = []
             items_by_category[category].append(pos)
-        
-        # Sort categories by number of items (descending)
+
         sorted_categories = sorted(items_by_category.keys(), key=lambda c: len(items_by_category[c]), reverse=True)
-        
-        # Sort and display items by category
+
         for category in sorted_categories:
             emoji = get_category_emoji(category)
             category_name = category.capitalize()
             output_text += f"{category_name} {emoji}:\n"
-            
-            # Sort items within category by price (descending)
             sorted_items = sorted(items_by_category[category], key=lambda x: x.price, reverse=True)
             for pos in sorted_items:
                 output_text += f"    {pos.description} - {pos.price:.1f}\n"
-    
-    # Add related receipts section after items
+
     if parsed_receipt.reference_receipts_ids and len(parsed_receipt.reference_receipts_ids) > 0:
         output_text += f"\nRelated Receipts:\n"
         for receipt_id in parsed_receipt.reference_receipts_ids:
             try:
                 related_receipt = get_receipt(receipt_id)
                 if related_receipt:
-                    # Check permissions - verify user has access to this receipt
                     group_user_ids = get_group_user_ids(user_id)
                     if related_receipt.user_id not in group_user_ids:
                         logger.warning(f"Receipt {receipt_id} not accessible to user {user_id} (different group)")
@@ -185,17 +163,63 @@ async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_T
             except Exception as e:
                 logger.warning(f"Error fetching related receipt {receipt_id}: {e}")
                 output_text += f"  Receipt {receipt_id} (error loading)\n"
-    
+
+    return output_text
+
+
+async def present_parsed_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, *, parsed_receipt, original_json, preface: str, user_text_line: str | None = None, auto_save: bool = False):
+    """Display parsed receipt. With auto_save=True, saves immediately (create flow). Without, shows Approve/Reject buttons (edit flow)."""
+    user_id = update.effective_user.id
+
+    output_text = _build_receipt_display_text(parsed_receipt, preface, user_text_line, user_id)
+
+    if auto_save:
+        try:
+            user = User(user_id=user_id, name=update.effective_user.full_name)
+            get_or_create_user(user)
+            logger.info(f"User verified/created in database: {user.name} (ID: {user.user_id})")
+
+            receipt_id = add_receipt(parsed_receipt)
+            logger.info(f"Receipt saved successfully with ID: {receipt_id}")
+
+            try:
+                related_ids = parsed_receipt.reference_receipts_ids
+                if related_ids:
+                    logger.info(f"Creating receipt relations for receipt {receipt_id} with {len(related_ids)} references")
+                    create_receipt_relations(receipt_id, related_ids)
+            except Exception as e:
+                logger.error(f"Failed to create receipt relations: {str(e)}. Rolling back receipt addition.")
+                delete_receipt(receipt_id, user_id)
+                raise
+
+            output_text += f"\n✅ Receipt saved! ID: {receipt_id}"
+            await update.message.reply_text(output_text, reply_markup=get_persistent_keyboard())
+        except Exception as e:
+            logger.error(f"Failed to auto-save receipt for user {user_id}: {str(e)}", exc_info=True)
+            await update.message.reply_text(f"❌ Failed to save receipt: {e}", reply_markup=get_persistent_keyboard())
+        return ConversationHandler.END
+
+    # Edit flow: store temp data and show Approve/Reject buttons
+    editing_receipt_id = receipt_data.get(user_id, {}).get("editing_receipt_id")
+    timestamp = str(int(time.time()))
+    receipt_data[user_id] = {
+        "parsed_receipt": parsed_receipt,
+        "original_json": original_json,
+        "user_comment": None,
+        "latest_timestamp": timestamp,
+        "latest_message_id": None
+    }
+    if editing_receipt_id is not None:
+        receipt_data[user_id]["editing_receipt_id"] = editing_receipt_id
+
     output_text += f"\n💡 To make changes, just type what you'd like to adjust or send a voice message"
 
-    # Create approval buttons with timestamp
     keyboard = [[
         InlineKeyboardButton("✅ Approve", callback_data=f"approve_{timestamp}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{timestamp}")
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Send the message and store its ID
     sent_message = await update.message.reply_text(output_text, reply_markup=reply_markup)
     receipt_data[user_id]["latest_message_id"] = sent_message.message_id
     logger.info(f"Stored message ID {sent_message.message_id} for user {user_id}")
@@ -345,14 +369,15 @@ async def handle_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             timing_text = f"(AI request took {processing_time:.1f}s)"
             preface_with_timing = f"Here's what I found in your receipt {timing_text}:"
             
-            # Present preview with approval buttons using shared presenter
+            # Save receipt immediately without approval step
             return await present_parsed_receipt(
                 update,
                 context,
                 parsed_receipt=parsed_receipt,
                 original_json=gemini_output,
                 preface=preface_with_timing,
-                user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None)
+                user_text_line=(f"📝 Your comment: {user_comment}" if user_comment else None),
+                auto_save=True
             )
             
         except Exception as e:
@@ -631,14 +656,15 @@ async def handle_voice_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
             timing_text = f"(AI request took {processing_time:.1f}s)"
             preface_with_timing = f"Here's what I understood from your voice message {timing_text}:"
 
-            # Present preview with approval buttons
+            # Save receipt immediately without approval step
             return await present_parsed_receipt(
                 update,
                 context,
                 parsed_receipt=parsed_receipt,
                 original_json=gemini_output,
                 preface=preface_with_timing,
-                user_text_line=f"🎙️ Your message: \"{transcribed_text}\""
+                user_text_line=f"🎙️ Your message: \"{transcribed_text}\"",
+                auto_save=True
             )
             
         except Exception as e:
@@ -829,7 +855,8 @@ async def add_text_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, c
             parsed_receipt=parsed_receipt,
             original_json=gemini_output,
             preface=preface_with_timing,
-            user_text_line=f"📝 Your text: \"{user_text}\""
+            user_text_line=f"📝 Your text: \"{user_text}\"",
+            auto_save=True
         )
     except Exception as e:
         logger.error(f"Failed to process /add text receipt for user {user.id}: {str(e)}", exc_info=True)
