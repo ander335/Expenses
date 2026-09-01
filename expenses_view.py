@@ -146,8 +146,40 @@ def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
         else:
             all_months[month_data['month']]['income'] = month_data['total']
             all_months[month_data['month']]['income_count'] = month_data['count']
-    
-    text = f"📊 Monthly net expenses:\n\n"
+
+    average_receipts = get_summary_receipts(user_id, 12)
+    current_date = datetime.now()
+    six_month_net = 0.0
+    yearly_net = 0.0
+    ytd_net = 0.0
+
+    for receipt in average_receipts:
+        receipt_date = datetime.strptime(receipt.date, '%d-%m-%Y')
+        months_ago = (current_date.year - receipt_date.year) * 12 + current_date.month - receipt_date.month
+        net_amount = -receipt.total_amount if receipt.is_income else receipt.total_amount
+
+        if months_ago < 6:
+            six_month_net += net_amount
+        if months_ago < 12:
+            yearly_net += net_amount
+        if receipt_date.year == current_date.year:
+            ytd_net += net_amount
+
+    six_month_average = six_month_net / 6
+    yearly_average = yearly_net / 12
+    ytd_average = ytd_net / current_date.month
+    logger.info(
+        f"Calculated net summary averages for user {user_id}: "
+        f"six_month={six_month_average:.1f}, yearly={yearly_average:.1f}, ytd={ytd_average:.1f}"
+    )
+
+    text = (
+        "📊 Monthly net expenses:\n\n"
+        "📈 Average monthly net expenses:\n"
+        f"  6 months: {six_month_average:.1f}\n"
+        f"  1 year: {yearly_average:.1f}\n"
+        f"  YTD: {ytd_average:.1f}\n\n"
+    )
     for month in sorted(all_months.keys(), key=lambda x: datetime.strptime(x, '%m-%Y'), reverse=True):
         net = all_months[month]['expenses'] - all_months[month]['income']
         total_count = all_months[month]['expenses_count'] + all_months[month]['income_count']
@@ -470,8 +502,8 @@ async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"Persistent detailed summary button clicked by user {user.full_name} (ID: {user_id})")
         
         try:
-            # Default to last 6 months for button click with category breakdown
-            n = 6
+            # Default to last 3 months for button click with category breakdown
+            n = 3
             logger.info(f"Generating {n} month detailed summary with categories for user {user_id}")
             
             text, has_data = calculate_monthly_detailed_summary(user_id, n, show_categories=True)

@@ -188,7 +188,7 @@ async def show_detailed_summary(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     try:
-        n = int(context.args[0]) if context.args else 6  # Default to last 6 months
+        n = int(context.args[0]) if context.args else 3  # Default to last 3 months
         logger.info(f"Generating {n} month detailed summary for user {user.id}")
         if n <= 0:
             raise ValueError("Number must be positive")
