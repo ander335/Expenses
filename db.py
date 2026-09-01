@@ -616,75 +616,100 @@ def get_receipts_by_date(user_id: int, date_str: str) -> List[Receipt]:
     finally:
         session.close()
 
-def get_monthly_summary(user_id: int, n_months: int, fetch_income: Optional[bool] = None) -> List[dict]:
-    """Get monthly summary for last N months including group members.
-    """
-    from sqlalchemy import func, desc
-    from datetime import datetime, timedelta
-    
+def _get_valid_summary_months(n_months: int, today) -> set[str]:
+    """Return month-year keys for the current and preceding calendar months."""
+    valid_months = set()
+    year = today.year
+    month = today.month
+
+    for _ in range(n_months):
+        valid_months.add(f"{month:02d}-{year}")
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+
+    return valid_months
+
+
+def get_summary_receipts(user_id: int, n_months: int, fetch_income: Optional[bool] = None) -> List[Receipt]:
+    """Get non-future receipts from the last N calendar months for the user's group."""
+    from datetime import datetime
+
     session = Session()
     try:
-        # Get all user IDs in the same group (including the user themselves)
         group_user_ids = get_group_user_ids(user_id)
-        
-        # Create a set of valid month-year strings for current month and N-1 months back
-        today = datetime.now()
-        current_year = today.year
-        current_month = today.month
-        
-        valid_months = set()
-        year = current_year
-        month = current_month
-        
-        for i in range(n_months):
-            valid_months.add(f"{month:02d}-{year}")
-            # Go back one month
-            month -= 1
-            if month == 0:
-                month = 12
-                year -= 1
-        
+        today = datetime.now().date()
+        valid_months = _get_valid_summary_months(n_months, today)
         logger.info(f"Valid months for summary: {sorted(valid_months)}")
-        
-        # Query receipts grouped by month for all group members
-        query = session.query(
-            # Extract year and month from DD-MM-YYYY format
-            func.substr(Receipt.date, 7, 4).label('year'),  # Extract YYYY
-            func.substr(Receipt.date, 4, 2).label('month_num'),  # Extract MM
-            func.substr(Receipt.date, 4, 7).label('month'),  # Extract MM-YYYY for display
-            func.sum(Receipt.total_amount).label('total'),
-            func.count(Receipt.receipt_id).label('count')
-        ).filter(
+
+        query = session.query(Receipt).filter(
             Receipt.user_id.in_(group_user_ids),
-            Receipt.date.isnot(None)  # Exclude records with NULL dates
+            Receipt.date.isnot(None)
         )
-        
-        # Filter by transaction type if specified
+
         if fetch_income is not None:
             query = query.filter(Receipt.is_income == fetch_income)
             transaction_type = 'income' if fetch_income else 'expenses'
             logger.info(f"Filtering for: {transaction_type}")
-        
-        results = query.group_by(
-            func.substr(Receipt.date, 4, 7)  # Group by MM-YYYY
-        ).order_by(
-            desc(func.substr(Receipt.date, 7, 4)),  # Sort by year descending
-            desc(func.substr(Receipt.date, 4, 2))   # Then by month descending
-        ).all()
-        
-        # Convert to list of dicts with formatted month
-        return [
-            {
-                'month': r.month or 'Unknown',  # Will be in MM-YYYY format
-                'total': float(r.total or 0),
-                'count': r.count or 0
-            }
-            for r in results 
-            # Filter for last N months - check if month is in valid set
-            if r.month in valid_months 
-        ]
+
+        summary_receipts = []
+        invalid_date_count = 0
+        future_date_count = 0
+        for receipt in query.all():
+            try:
+                receipt_date = datetime.strptime(receipt.date, "%d-%m-%Y").date()
+            except (TypeError, ValueError):
+                invalid_date_count += 1
+                logger.warning(f"Skipping receipt {receipt.receipt_id} with invalid summary date: {receipt.date!r}")
+                continue
+
+            if receipt_date.strftime("%m-%Y") not in valid_months:
+                continue
+
+            if receipt_date > today:
+                future_date_count += 1
+                logger.info(
+                    f"Skipping future-dated receipt {receipt.receipt_id} from summary: "
+                    f"receipt_date={receipt.date}, today={today.strftime('%d-%m-%Y')}"
+                )
+                continue
+
+            summary_receipts.append(receipt)
+
+        logger.info(
+            f"Selected {len(summary_receipts)} receipts for summary; "
+            f"skipped_invalid_dates={invalid_date_count}, skipped_future_dates={future_date_count}"
+        )
+        return summary_receipts
     finally:
         session.close()
+
+
+def get_monthly_summary(user_id: int, n_months: int, fetch_income: Optional[bool] = None) -> List[dict]:
+    """Get monthly summary for last N months including group members."""
+    from datetime import datetime
+
+    monthly_totals = {}
+    for receipt in get_summary_receipts(user_id, n_months, fetch_income):
+        month = datetime.strptime(receipt.date, "%d-%m-%Y").strftime("%m-%Y")
+        if month not in monthly_totals:
+            monthly_totals[month] = {'total': 0.0, 'count': 0}
+        monthly_totals[month]['total'] += receipt.total_amount
+        monthly_totals[month]['count'] += 1
+
+    return [
+        {
+            'month': month,
+            'total': float(values['total']),
+            'count': values['count']
+        }
+        for month, values in sorted(
+            monthly_totals.items(),
+            key=lambda item: datetime.strptime(item[0], "%m-%Y"),
+            reverse=True
+        )
+    ]
 
 # Group management functions
 

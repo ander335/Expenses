@@ -5,9 +5,7 @@ from telegram.ext import ContextTypes
 from logger_config import logger
 import calendar
 from datetime import datetime
-from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_user, delete_receipt, get_group_user_ids
-from sqlalchemy import func, desc
-from db import Session, Receipt
+from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_summary_receipts, get_user, delete_receipt
 from ai import format_category_with_emoji, get_category_emoji
 from expenses_create import format_receipt_for_display
 
@@ -158,119 +156,69 @@ def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
     return text, True
 
 def calculate_monthly_detailed_summary(user_id: int, n: int, show_categories: bool = True) -> tuple:
-    """Calculate detailed monthly summary with optional category breakdown.
+    """Calculate detailed monthly summary with optional category breakdown."""
+    from datetime import datetime as dt
+
+    logger.info(f"Generating detailed summary for the last {n} months for user {user_id}")
+    receipts = get_summary_receipts(user_id, n)
+
+    if not receipts:
+        return None, False
+
+    monthly_data = {}
+    category_data = {}
+
+    for receipt in receipts:
+        month_str = dt.strptime(receipt.date, '%d-%m-%Y').strftime('%m-%Y')
+
+        if month_str not in monthly_data:
+            monthly_data[month_str] = {
+                'expenses': [],
+                'income': [],
+            }
+
+        if receipt.is_income:
+            monthly_data[month_str]['income'].append(receipt)
+        else:
+            monthly_data[month_str]['expenses'].append(receipt)
+            if month_str not in category_data:
+                category_data[month_str] = {}
+            if receipt.category not in category_data[month_str]:
+                category_data[month_str][receipt.category] = 0
+            category_data[month_str][receipt.category] += receipt.total_amount
+
+    text = "📊 Detailed Monthly Summary:\n\n"
+    sorted_months = sorted(monthly_data.keys(), key=lambda x: dt.strptime(x, '%m-%Y'), reverse=True)
+
+    for month in sorted_months:
+        month_total_expenses = sum(r.total_amount for r in monthly_data[month]['expenses'])
+        month_total_income = sum(r.total_amount for r in monthly_data[month]['income'])
+        total_items = len(monthly_data[month]['expenses']) + len(monthly_data[month]['income'])
+
+        text += f"📅 {month}:\n"
+        text += f"  📌 Total: {total_items} items\n"
+
+        if monthly_data[month]['expenses']:
+            text += f"  💸 Expenses: {month_total_expenses:.1f}\n"
+
+            if show_categories and month in category_data:
+                sorted_categories = sorted(
+                    category_data[month].items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )
+
+                for category, amount in sorted_categories:
+                    category_emoji = get_category_emoji(category)
+                    text += f"    {category_emoji} {amount:.1f}\n"
+
+        if monthly_data[month]['income']:
+            text += f"  💰 Additional income: {month_total_income:.1f}\n"
+
+        text += "\n"
+
+    return text, True
     
-    Args:
-        user_id: User ID to get summary for
-        n: Number of months to include
-        show_categories: If True, show expenses aggregated by categories sorted from most expensive
-        
-    Returns:
-        (formatted_text, has_data)
-    """
-    session = Session()
-    try:
-        # Get all user IDs in the same group
-        group_user_ids = get_group_user_ids(user_id)
-        
-        # Create a set of valid month-year strings
-        from datetime import datetime as dt, timedelta
-        today = dt.now()
-        current_year = today.year
-        current_month = today.month
-        
-        valid_months = set()
-        year = current_year
-        month = current_month
-        
-        for i in range(n):
-            valid_months.add(f"{month:02d}-{year}")
-            month -= 1
-            if month == 0:
-                month = 12
-                year -= 1
-        
-        logger.info(f"Generating detailed summary for months: {sorted(valid_months)}")
-        
-        # Get all receipts for the period
-        receipts = session.query(Receipt).filter(
-            Receipt.user_id.in_(group_user_ids),
-            Receipt.date.isnot(None)
-        ).all()
-        
-        if not receipts:
-            return None, False
-        
-        # Organize receipts by month
-        monthly_data = {}
-        category_data = {}  # For aggregating by category
-        
-        for receipt in receipts:
-            # Extract month from date (DD-MM-YYYY format)
-            month_str = receipt.date[3:10]  # MM-YYYY
-            
-            if month_str not in valid_months:
-                continue
-            
-            if month_str not in monthly_data:
-                monthly_data[month_str] = {
-                    'expenses': [],
-                    'income': [],
-                }
-            
-            if receipt.is_income:
-                monthly_data[month_str]['income'].append(receipt)
-            else:
-                monthly_data[month_str]['expenses'].append(receipt)
-                # Aggregate by category
-                if month_str not in category_data:
-                    category_data[month_str] = {}
-                if receipt.category not in category_data[month_str]:
-                    category_data[month_str][receipt.category] = 0
-                category_data[month_str][receipt.category] += receipt.total_amount
-        
-        if not monthly_data:
-            return None, False
-        
-        text = f"📊 Detailed Monthly Summary:\n\n"
-        
-        # Sort months from newest to oldest
-        sorted_months = sorted(monthly_data.keys(), key=lambda x: dt.strptime(x, '%m-%Y'), reverse=True)
-        
-        for month in sorted_months:
-            month_total_expenses = sum(r.total_amount for r in monthly_data[month]['expenses'])
-            month_total_income = sum(r.total_amount for r in monthly_data[month]['income'])
-            total_items = len(monthly_data[month]['expenses']) + len(monthly_data[month]['income'])
-            
-            text += f"📅 {month}:\n"
-            text += f"  📌 Total: {total_items} items\n"
-            
-            # Show expenses breakdown
-            if monthly_data[month]['expenses']:
-                text += f"  💸 Expenses: {month_total_expenses:.1f}\n"
-                
-                if show_categories and month in category_data:
-                    # Sort categories by amount (highest first)
-                    sorted_categories = sorted(
-                        category_data[month].items(),
-                        key=lambda x: x[1],
-                        reverse=True
-                    )
-                    
-                    for category, amount in sorted_categories:
-                        category_emoji = get_category_emoji(category)
-                        text += f"    {category_emoji} {amount:.1f}\n"
-            
-            # Show income breakdown
-            if monthly_data[month]['income']:
-                text += f"  💰 Additional income: {month_total_income:.1f}\n"
-            
-            text += "\n"
-        
-        return text, True
-    
-    finally:
-        session.close()
 
 async def list_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE, check_user_access_func):
     user = update.effective_user
