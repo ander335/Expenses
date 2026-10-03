@@ -165,12 +165,16 @@ def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
         if receipt_date.year == current_date.year:
             ytd_net += net_amount
 
-    six_month_average = six_month_net / 6
-    yearly_average = yearly_net / 12
-    ytd_average = ytd_net / current_date.month
+    days_in_current_month = calendar.monthrange(current_date.year, current_date.month)[1]
+    month_fraction = current_date.day / days_in_current_month
+
+    six_month_average = six_month_net / (5 + month_fraction)
+    yearly_average = yearly_net / (11 + month_fraction)
+    ytd_average = ytd_net / ((current_date.month - 1) + month_fraction)
     logger.info(
         f"Calculated net summary averages for user {user_id}: "
-        f"six_month={six_month_average:.1f}, yearly={yearly_average:.1f}, ytd={ytd_average:.1f}"
+        f"six_month={six_month_average:.1f}, yearly={yearly_average:.1f}, ytd={ytd_average:.1f}, "
+        f"month_fraction={month_fraction:.2f} (day {current_date.day}/{days_in_current_month})"
     )
 
     text = (
