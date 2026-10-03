@@ -65,6 +65,7 @@ call gcloud run deploy expenses-bot ^
     --port 8080 ^
     --cpu 1 ^
     --memory 512Mi ^
+    --no-cpu-throttling ^
     --min-instances 0 ^
     --max-instances 1
 

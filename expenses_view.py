@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes
 from logger_config import logger
 import calendar
 from datetime import datetime
-from db import get_last_n_receipts, get_receipts_by_date, get_monthly_summary, get_summary_receipts, get_user, delete_receipt
+from db import get_last_n_receipts, get_receipts_by_date, get_summary_receipts, get_user, delete_receipt
 from ai import format_category_with_emoji, get_category_emoji
 from expenses_create import format_receipt_for_display
 
@@ -120,50 +120,36 @@ def create_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
 def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
     """Calculate monthly net summary with expenses as positive and income as negative.
     Returns (formatted_text, has_data)."""
-    expenses = get_monthly_summary(user_id, n, fetch_income=False)
-    income = get_monthly_summary(user_id, n, fetch_income=True)
-    
-    if not expenses and not income:
-        return None, False
-    
-    # Calculate monthly net (expenses positive, income negative)
-    all_months = {}
-    for month_data in (expenses or []):
-        all_months[month_data['month']] = {
-            'expenses': month_data['total'], 
-            'expenses_count': month_data['count'],
-            'income': 0,
-            'income_count': 0
-        }
-    for month_data in (income or []):
-        if month_data['month'] not in all_months:
-            all_months[month_data['month']] = {
-                'expenses': 0,
-                'expenses_count': 0,
-                'income': month_data['total'],
-                'income_count': month_data['count']
-            }
-        else:
-            all_months[month_data['month']]['income'] = month_data['total']
-            all_months[month_data['month']]['income_count'] = month_data['count']
+    # Single DB read covering both the displayed months and the 12-month averages window
+    window_months = max(n, 12)
+    receipts = get_summary_receipts(user_id, window_months)
+    logger.info(f"Loaded {len(receipts)} receipts over {window_months} months for net summary of user {user_id} (display months={n})")
 
-    average_receipts = get_summary_receipts(user_id, 12)
     current_date = datetime.now()
+    all_months = {}
     six_month_net = 0.0
     yearly_net = 0.0
     ytd_net = 0.0
 
-    for receipt in average_receipts:
+    for receipt in receipts:
         receipt_date = datetime.strptime(receipt.date, '%d-%m-%Y')
         months_ago = (current_date.year - receipt_date.year) * 12 + current_date.month - receipt_date.month
         net_amount = -receipt.total_amount if receipt.is_income else receipt.total_amount
 
+        if months_ago < n:
+            month_entry = all_months.setdefault(receipt_date.strftime('%m-%Y'), {'net': 0.0, 'count': 0})
+            month_entry['net'] += net_amount
+            month_entry['count'] += 1
         if months_ago < 6:
             six_month_net += net_amount
         if months_ago < 12:
             yearly_net += net_amount
         if receipt_date.year == current_date.year:
             ytd_net += net_amount
+
+    if not all_months:
+        logger.info(f"No receipts in the last {n} months for user {user_id}")
+        return None, False
 
     days_in_current_month = calendar.monthrange(current_date.year, current_date.month)[1]
     month_fraction = current_date.day / days_in_current_month
@@ -185,10 +171,8 @@ def calculate_monthly_net_summary(user_id: int, n: int) -> tuple:
         f"  YTD: {ytd_average:.1f}\n\n"
     )
     for month in sorted(all_months.keys(), key=lambda x: datetime.strptime(x, '%m-%Y'), reverse=True):
-        net = all_months[month]['expenses'] - all_months[month]['income']
-        total_count = all_months[month]['expenses_count'] + all_months[month]['income_count']
-        text += f"{month}: {total_count} receipts, total: {net:.1f}\n"
-    
+        text += f"{month}: {all_months[month]['count']} receipts, total: {all_months[month]['net']:.1f}\n"
+
     return text, True
 
 def calculate_monthly_detailed_summary(user_id: int, n: int, show_categories: bool = True) -> tuple:
@@ -397,17 +381,10 @@ async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT
     user = update.effective_user
     user_id = user.id
     
-    # Check authorization first
-    if user_id == get_admin_user_id_func():
-        # Admin is always authorized
-        pass
-    else:
-        # Check database authorization for non-admin users
-        db_user = get_user(user_id)
-        if not db_user or not db_user.is_authorized:
-            logger.warning(f"Unauthorized calendar access attempt from user {user.full_name} (ID: {user_id})")
-            await query.edit_message_text("Sorry, you are not authorized to use this bot.")
-            return
+    if not _check_callback_authorization(user, get_admin_user_id_func):
+        logger.warning(f"Unauthorized calendar access attempt from user {user.full_name} (ID: {user_id})")
+        await query.edit_message_text("Sorry, you are not authorized to use this bot.")
+        return
     
     callback_data = query.data
     
@@ -447,78 +424,84 @@ async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT
         # Ignore clicks on header/day labels
         pass
 
+def _check_callback_authorization(user, get_admin_user_id_func) -> bool:
+    # Admin is always authorized; others must be authorized in the database
+    if user.id == get_admin_user_id_func():
+        return True
+    db_user = get_user(user.id)
+    return bool(db_user and db_user.is_authorized)
+
+# Summary views toggled by persistent buttons; result_button_is_summary defines which toggle button the result shows
+SUMMARY_VIEWS = {
+    "persistent_summary": {
+        "label": "summary",
+        "months": 6,
+        "calculate": lambda user_id, n: calculate_monthly_net_summary(user_id, n),
+        "result_button_is_summary": False,
+    },
+    "persistent_detailed_summary": {
+        "label": "detailed summary",
+        "months": 3,
+        "calculate": lambda user_id, n: calculate_monthly_detailed_summary(user_id, n, show_categories=True),
+        "result_button_is_summary": True,
+    },
+}
+
+async def _show_summary_view(query, user, view_key: str):
+    """Generate a summary view and edit the message with it, keeping the clicked button on failure."""
+    view = SUMMARY_VIEWS[view_key]
+    label, n = view["label"], view["months"]
+    result_keyboard = get_persistent_keyboard(show_summary=view["result_button_is_summary"])
+    fallback_keyboard = get_persistent_keyboard(show_summary=not view["result_button_is_summary"])
+    logger.info(f"Persistent {label} button clicked by user {user.full_name} (ID: {user.id})")
+
+    try:
+        started_at = datetime.now()
+        logger.info(f"Generating {n} month {label} for user {user.id}")
+        text, has_data = view["calculate"](user.id, n)
+        elapsed = (datetime.now() - started_at).total_seconds()
+
+        if not has_data:
+            logger.info(f"No data for {label} of user {user.id} (last {n} months, {elapsed:.2f}s)")
+            await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=fallback_keyboard)
+            return
+
+        await query.edit_message_text(text, reply_markup=result_keyboard)
+        logger.info(f"Displayed {label} for user {user.id} ({len(text)} chars, generated in {elapsed:.2f}s)")
+
+    except Exception as e:
+        logger.error(f"Error during {label} generation for user {user.id}: {str(e)}", exc_info=True)
+        await query.edit_message_text(f"❌ Failed to generate {label}: {str(e)}", reply_markup=fallback_keyboard)
+
 async def handle_persistent_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, get_admin_user_id_func):
     """Handle clicks on persistent buttons."""
     query = update.callback_query
-    await query.answer()
-    
     user = update.effective_user
-    user_id = user.id
-    
-    # Use the same authorization logic as other handlers
-    # Check if user is admin first
-    if user_id == get_admin_user_id_func():
-        # Admin is always authorized
-        pass
-    else:
-        # Check database authorization for non-admin users
-        db_user = get_user(user_id)
-        if not db_user or not db_user.is_authorized:
-            logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user_id})")
-            await query.edit_message_text("Sorry, you are not authorized to use this bot.")
-            return
-    
+
+    # Immediate toast feedback for potentially slow summary calculations
+    answer_text = "⏳ Calculating..." if query.data in SUMMARY_VIEWS else None
+    await query.answer(answer_text)
+
+    if not _check_callback_authorization(user, get_admin_user_id_func):
+        logger.warning(f"Unauthorized access attempt from user {user.full_name} (ID: {user.id})")
+        await query.edit_message_text("Sorry, you are not authorized to use this bot.")
+        return
+
     if query.data == "persistent_calendar":
-        logger.info(f"Persistent calendar button clicked by user {user.full_name} (ID: {user_id})")
-        
+        logger.info(f"Persistent calendar button clicked by user {user.full_name} (ID: {user.id})")
+
         # Show date picker
         current_date = datetime.now()
         calendar_keyboard = create_calendar_keyboard(current_date.year, current_date.month)
-        
+
         await query.edit_message_text(
             "📅 Select a date to view receipts:\n\n"
             "💡 Tip: You can also type /date DD.MM or /date DD.MM.YYYY for quick access",
             reply_markup=calendar_keyboard
         )
-    
-    elif query.data == "persistent_summary":
-        logger.info(f"Persistent summary button clicked by user {user.full_name} (ID: {user_id})")
-        
-        try:
-            # Default to last 6 months for button click
-            n = 6
-            logger.info(f"Generating {n} month summary for user {user_id}")
-            
-            text, has_data = calculate_monthly_net_summary(user_id, n)
-            
-            if not has_data:
-                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard(show_summary=True))
-                return
-            
-            # Show summary with Details button
-            await query.edit_message_text(text, reply_markup=get_persistent_keyboard(show_summary=False))
-            
-        except Exception as e:
-            logger.error(f"Error during summary generation for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"❌ Failed to generate summary: {str(e)}", reply_markup=get_persistent_keyboard(show_summary=True))
-    
-    elif query.data == "persistent_detailed_summary":
-        logger.info(f"Persistent detailed summary button clicked by user {user.full_name} (ID: {user_id})")
-        
-        try:
-            # Default to last 3 months for button click with category breakdown
-            n = 3
-            logger.info(f"Generating {n} month detailed summary with categories for user {user_id}")
-            
-            text, has_data = calculate_monthly_detailed_summary(user_id, n, show_categories=True)
-            
-            if not has_data:
-                await query.edit_message_text(f"No data found for the last {n} months.", reply_markup=get_persistent_keyboard(show_summary=False))
-                return
-            
-            # Show detailed summary with Summary button to toggle back
-            await query.edit_message_text(text, reply_markup=get_persistent_keyboard(show_summary=True))
-            
-        except Exception as e:
-            logger.error(f"Error during detailed summary generation for user {user_id}: {str(e)}", exc_info=True)
-            await query.edit_message_text(f"❌ Failed to generate detailed summary: {str(e)}", reply_markup=get_persistent_keyboard(show_summary=False))
+
+    elif query.data in SUMMARY_VIEWS:
+        await _show_summary_view(query, user, query.data)
+
+    else:
+        logger.warning(f"Unknown persistent button data '{query.data}' from user {user.id}")
